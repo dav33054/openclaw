@@ -41,6 +41,7 @@ import type {
   PluginHookMessageSendingEvent,
   PluginHookMessageSendingResult,
   PluginHookMessageSentEvent,
+  PluginHookPollVoteReceivedEvent,
 } from "./hook-message.types.js";
 import type {
   PluginHookSkillChangedEvent,
@@ -84,6 +85,7 @@ export type {
   PluginHookMediaFact,
   PluginHookMessageReceivedEvent,
   PluginHookProviderUpdate,
+  PluginHookPollVoteReceivedEvent,
 } from "./hook-message.types.js";
 export {
   PluginApprovalResolutions,
@@ -121,6 +123,7 @@ const PLUGIN_HOOK_NAMES = [
   "inbound_claim",
   "channel_pairing_requested",
   "message_received",
+  "poll_vote_received",
   "message_sending",
   "reply_payload_sending",
   "message_sent",
@@ -1027,6 +1030,7 @@ export type PluginHookHandlerMap = {
     PluginHookReplyPayloadSendingResult
   >;
   message_received: AsyncPluginHook<PluginHookMessageReceivedEvent, PluginHookMessageContext>;
+  poll_vote_received: AsyncPluginHook<PluginHookPollVoteReceivedEvent, PluginHookMessageContext>;
   message_sending: AsyncPluginHook<
     PluginHookMessageSendingEvent,
     PluginHookMessageContext,

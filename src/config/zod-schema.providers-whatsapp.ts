@@ -31,6 +31,7 @@ const WhatsAppDirectSchema = z.record(z.string(), WhatsAppDirectEntrySchema).opt
 const WhatsAppPluginHooksSchema = z
   .object({
     messageReceived: z.boolean().optional(),
+    pollVoteReceived: z.boolean().optional(),
   })
   .strict()
   .optional();
