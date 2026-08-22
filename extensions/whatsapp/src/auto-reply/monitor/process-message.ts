@@ -1,3 +1,4 @@
+import { resolveAccountEntry } from "openclaw/plugin-sdk/account-core";
 import {
   logAckFailure,
   removeAckReactionHandleAfterReply,
@@ -85,6 +86,13 @@ const WHATSAPP_MESSAGE_RECEIVED_HOOK_LIMITS = {
   timeoutMs: 2_000,
 };
 
+type WhatsAppMessageReceivedHookConfig = {
+  pluginHooks?: {
+    messageReceived?: boolean;
+  };
+  accounts?: Record<string, WhatsAppMessageReceivedHookConfig>;
+};
+
 function mapWhatsAppIngressToTurnAdmission(
   ingress: ReturnType<typeof requireWhatsAppInboundAdmission>["ingress"],
 ) {
@@ -105,8 +113,12 @@ function shouldEmitWhatsAppMessageReceivedHooks(params: {
   cfg: ReturnType<LoadConfigFn>;
   accountId?: string;
 }): boolean {
-  const channelConfig = params.cfg.channels?.whatsapp;
-  const accountConfig = params.accountId ? channelConfig?.accounts?.[params.accountId] : undefined;
+  const channelConfig = params.cfg.channels?.whatsapp as
+    | WhatsAppMessageReceivedHookConfig
+    | undefined;
+  const accountConfig = params.accountId
+    ? resolveAccountEntry(channelConfig?.accounts, params.accountId)
+    : undefined;
 
   return (
     accountConfig?.pluginHooks?.messageReceived ??
