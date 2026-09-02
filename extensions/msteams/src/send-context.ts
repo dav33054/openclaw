@@ -52,6 +52,8 @@ export type MSTeamsProactiveContext = {
   tokenProvider: MSTeamsAccessTokenProvider;
   /** SharePoint site ID for file uploads in group chats/channels */
   sharePointSiteId?: string;
+  /** Folder name for bot-uploaded files on the SharePoint site */
+  sharePointFolder?: string;
   /** Resolved media max bytes from config (default: 100MB) */
   mediaMaxBytes?: number;
 } & MSTeamsProactiveReplyTarget;
@@ -267,6 +269,7 @@ export async function resolveMSTeamsSendContext(params: {
     sdkCloudOptions,
     tokenProvider,
     sharePointSiteId: msteamsCfg.sharePointSiteId,
+    sharePointFolder: msteamsCfg.sharePointFolder,
     mediaMaxBytes,
   };
 }
