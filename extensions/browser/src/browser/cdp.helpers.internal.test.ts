@@ -47,6 +47,7 @@ import {
   openCdpWebSocket,
   withCdpSocket,
 } from "./cdp.helpers.js";
+import { captureScreenshot } from "./cdp.screenshot.js";
 import { BrowserCdpEndpointBlockedError } from "./errors.js";
 
 async function startWsServer() {
@@ -761,6 +762,72 @@ describe("cdp.helpers internal", () => {
         }),
       ).rejects.toThrow(/callback boom/);
     });
+
+    it("aborts an unanswered command issued after the handshake", async () => {
+      const server = await startWsServer();
+      wss = server.wss;
+      const commandReceived = new Promise<void>((resolve) => {
+        server.wss.on("connection", (socket) => {
+          socket.on("message", (raw) => {
+            const msg = JSON.parse(rawDataToString(raw)) as { method?: string };
+            if (msg.method === "Test.hang") {
+              resolve();
+            }
+          });
+        });
+      });
+      const controller = new AbortController();
+      const pending = withCdpSocket(
+        server.url,
+        async (send) => {
+          const command = send("Test.hang");
+          await commandReceived;
+          controller.abort(new Error("cancelled"));
+          return await command;
+        },
+        {
+          commandTimeoutMs: 2_000,
+          handshakeRetries: 0,
+          signal: controller.signal,
+          abortScope: "operation",
+        },
+      );
+
+      await expect(pending).rejects.toThrow(/CDP socket closed|WebSocket was closed|cancelled/i);
+    });
+
+    it("cancels an unanswered screenshot command through captureScreenshot", async () => {
+      const server = await startWsServer();
+      wss = server.wss;
+      let resolveCaptureCommand: () => void = () => {};
+      const captureCommandReceived = new Promise<void>((resolve) => {
+        resolveCaptureCommand = resolve;
+      });
+      server.wss.on("connection", (socket) => {
+        socket.on("message", (raw) => {
+          const msg = JSON.parse(rawDataToString(raw)) as { id?: number; method?: string };
+          if (msg.method === "Page.captureScreenshot") {
+            resolveCaptureCommand();
+            return;
+          }
+          socket.send(JSON.stringify({ id: msg.id, result: {} }));
+        });
+      });
+
+      const controller = new AbortController();
+      const startedAt = Date.now();
+      const pending = captureScreenshot({
+        wsUrl: server.url,
+        signal: controller.signal,
+        timeoutMs: 5_000,
+      });
+
+      await captureCommandReceived;
+      controller.abort(new Error("screenshot request cancelled"));
+
+      await expect(pending).rejects.toThrow("screenshot request cancelled");
+      expect(Date.now() - startedAt).toBeLessThan(1_000);
+    }, 3_000);
   });
 
   it("moves WebSocket URL userinfo into the Authorization header", async () => {
