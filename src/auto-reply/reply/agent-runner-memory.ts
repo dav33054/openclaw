@@ -97,6 +97,7 @@ import { startFollowupRunPreAdoptionHeartbeat } from "./queue/lifecycle.js";
 import { resolveFollowupAbortSignal } from "./queue/types.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
 import { incrementCompactionCount } from "./session-updates.js";
+import { deriveTranscriptOutputTokens } from "./transcript-output-usage.js";
 
 const MAX_FLUSH_FAILURES = 3;
 const preflightCompactionLog = createSubsystemLogger("auto-reply/preflight-compaction");
@@ -296,7 +297,7 @@ function deriveTranscriptUsageSnapshot(
   trailingMessages: AgentMessage[],
 ): SessionTranscriptUsageSnapshot | undefined {
   const promptTokens = deriveContextPromptTokens({ lastCallUsage: usage });
-  const outputTokens = asPositiveFiniteNumber(usage.output);
+  const outputTokens = deriveTranscriptOutputTokens(usage);
   if (!(typeof promptTokens === "number") && !(typeof outputTokens === "number")) {
     return undefined;
   }
