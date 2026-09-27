@@ -35,13 +35,22 @@ function prepareTalkAppLaunchDispatch(nodeId: string, rawParams: unknown) {
   }
   const assertCallerCurrent = captureGatewayToolCallerAssertion();
   const voice = execution.voiceRun;
+  if (voice && voice.agentId !== caller.agentId) {
+    throw new Error("Voice app launch agent does not match its admitted caller");
+  }
   let spokenGrantConsumed = false;
   let reason: string | undefined;
-  const validForMs = 5000;
+  let validForMs = 5000;
+  let authorizedPolicyId: string | undefined;
   return {
     dispatchParams: { ...action, agentId: caller.agentId },
     validityMs: () => validForMs,
     reason: () => reason,
+    recordPermitAuthorization: () => {
+      if (authorizedPolicyId) {
+        execution.recordPolicyAuthorization(authorizedPolicyId);
+      }
+    },
     isCurrent: (effectBoundary = false) => {
       try {
         assertCallerCurrent?.("node.invoke");
@@ -63,6 +72,7 @@ function prepareTalkAppLaunchDispatch(nodeId: string, rawParams: unknown) {
       const confirmationParams = {
         agentId: voice.agentId,
         voiceSessionId: voice.voiceSessionId,
+        originAuthority: voice.originAuthority,
         runId: execution.runId,
         toolCallId: execution.toolCallId,
         toolName: "nodes",
@@ -78,8 +88,19 @@ function prepareTalkAppLaunchDispatch(nodeId: string, rawParams: unknown) {
         reason = decision.reason;
         return false;
       }
-      if (effectBoundary) {
+      if (decision.policyId) {
+        // The policy is never converted into a one-shot grant. Every readiness
+        // check reads current configuration and origin; the permit cannot outlive expiry.
+        validForMs = Math.min(5000, (decision.policyExpiresAtMs ?? 0) - Date.now());
+        if (validForMs <= 0) {
+          reason = "Voice app-launch policy expired";
+          return false;
+        }
+      } else if (effectBoundary) {
         spokenGrantConsumed = true;
+      }
+      if (effectBoundary) {
+        authorizedPolicyId = decision.policyId;
       }
       return true;
     },
@@ -128,6 +149,9 @@ export function prepareTalkAppLaunchInvocation(params: {
           undefined &&
         launch.isCurrent(true);
       permitSent = true;
+      if (authorized) {
+        launch.recordPermitAuthorization();
+      }
       context.nodeRegistry.sendInvokeInput(
         invokeId,
         authorized

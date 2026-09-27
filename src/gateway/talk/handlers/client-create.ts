@@ -41,6 +41,7 @@ import {
   createTalkClientGatewayControlOwner,
   resolveTalkAgentConsultAuthority,
 } from "../client-gateway-control.js";
+import { captureTalkVoiceOrigin } from "../client-voice-origin.js";
 import {
   buildRealtimeInstructions,
   buildRealtimeVoiceLaunchOptions,
@@ -67,6 +68,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
   respond,
   context,
   client,
+  hasCurrentClientAuthority,
   sessionMutationAuthorization,
   sessionMutationCommitGuard,
 }) => {
@@ -213,6 +215,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
         ? (requestedVoiceSessionId ?? randomUUID())
         : undefined;
       let logicalSessionCreated = false;
+      let originAuthority: ReturnType<typeof captureTalkVoiceOrigin>;
       let unregisterVoiceSession: (() => void) | undefined;
       let providerReady = !ownsProvider;
       const ownerConnId = normalizeOptionalString(client?.connId);
@@ -224,6 +227,8 @@ export const createTalkClient: GatewayRequestHandler = async ({
       }
       const closeLogicalSession = async () => {
         unregisterVoiceSession?.();
+        originAuthority?.release();
+        originAuthority = undefined;
         if (!logicalSessionCreated) {
           return;
         }
@@ -248,6 +253,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
         ...(ownerConnId ? { ownerConnId } : {}),
         authority: resolveTalkAgentConsultAuthority(client?.connect?.scopes, client),
         getVoiceSessionId: () => activeVoiceSessionId,
+        getOriginAuthority: () => originAuthority,
         initialItems,
       });
       const gatewayControlOwner = ownsProvider
@@ -291,6 +297,14 @@ export const createTalkClient: GatewayRequestHandler = async ({
             closeLogicalSession,
           })
         : undefined;
+      gatewayControlOwner?.signal.addEventListener(
+        "abort",
+        () => {
+          originAuthority?.release();
+          originAuthority = undefined;
+        },
+        { once: true },
+      );
       const gatewayControl = gatewayControlOwner
         ? {
             ...gatewayControlOwner.control,
@@ -389,6 +403,9 @@ export const createTalkClient: GatewayRequestHandler = async ({
           }).catch((error: unknown) =>
             context.logGateway.warn(`talk voice session recovery failed: ${formatForLog(error)}`),
           );
+          originAuthority = ownsProvider
+            ? captureTalkVoiceOrigin({ client, hasCurrentClientAuthority })
+            : undefined;
           const voiceSessionId = createOrResumeClientVoiceSession({
             agentId,
             sessionKey,
@@ -475,6 +492,8 @@ export const createTalkClient: GatewayRequestHandler = async ({
         }
       } finally {
         if (!delivered) {
+          originAuthority?.release();
+          originAuthority = undefined;
           unregisterVoiceSession?.();
           try {
             if (gatewayControlOwner) {

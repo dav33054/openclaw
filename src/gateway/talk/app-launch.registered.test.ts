@@ -51,6 +51,7 @@ import { deviceHandlers } from "../server-methods/devices.js";
 import { nodeInvokeHandlers } from "../server-methods/nodes.invoke.js";
 import type { GatewayRequestHandlerOptions } from "../server-methods/types.js";
 import { sharingPolicyClient } from "../session-sharing.test-utils.js";
+import { captureTalkVoiceOrigin } from "./client-voice-origin.js";
 import { createInstalledAppLoopbackTransport } from "./installed-app-loopback.test-support.js";
 
 const mocks = vi.hoisted(() => ({ rpc: vi.fn() }));
@@ -89,13 +90,50 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
     "cancel-in-flight-after-permit",
     "expired-after-permit",
     "exec-revoked-after-permit",
-  ] as const)("preserves final outcome and independent gates: %s", async (mode) => {
+    "policy-repeat",
+    "policy-spoken-overlap",
+    "policy-selected-at-permit",
+    "policy-native-error",
+    "policy-detached-origin",
+    "policy-request-ended",
+    "policy-shared-token",
+    "policy-run-replaced",
+    "policy-mismatch-agentId",
+    "policy-mismatch-originatingDeviceId",
+    "policy-mismatch-nodeId",
+    "policy-mismatch-appId",
+    "policy-mismatch-appRevision",
+    "policy-revoke",
+    "policy-expire",
+    "policy-device-revoke",
+    "policy-host-denied",
+    "policy-node-denied",
+  ] as const)("preserves final outcome and independent gates: %s", async (scenario) => {
+    const policyMode = scenario.startsWith("policy-") ? scenario : undefined;
+    const mode =
+      scenario === "policy-native-error"
+        ? "os-error"
+        : scenario === "no" ||
+            scenario === "node-denied" ||
+            scenario === "exec-denied" ||
+            scenario === "caller-closed" ||
+            scenario === "eligibility-changed" ||
+            scenario === "os-error" ||
+            scenario === "caller-revoked-after-permit" ||
+            scenario === "source-revoked-after-permit" ||
+            scenario === "cancel-after-permit" ||
+            scenario === "cancel-in-flight-after-permit" ||
+            scenario === "expired-after-permit" ||
+            scenario === "exec-revoked-after-permit"
+          ? scenario
+          : "yes";
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       setActivePluginRegistry(createEmptyPluginRegistry());
       const data = state.path("app-data");
       fs.mkdirSync(path.join(data, "applications"), { recursive: true });
-      const executable = state.path("long-lived-native");
-      // A task-owned native executable with no arguments; stdout is ignored and cleanup is joined.
+      const executable = state.path("yes");
+      // Preserve argv[0] for multicall coreutils (uutils/busybox); a renamed applet exits immediately.
+      // This task-owned native executable has no arguments; stdout is ignored and cleanup is joined.
       fs.copyFileSync("/usr/bin/yes", executable);
       fs.chmodSync(executable, 0o755);
       if (mode === "os-error") {
@@ -118,17 +156,66 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
           nodes: {
             commands: {
               allow: ["device.apps.launch"],
-              ...(mode === "node-denied" ? { deny: ["device.apps.launch"] } : {}),
+              ...(mode === "node-denied" || policyMode === "policy-node-denied"
+                ? { deny: ["device.apps.launch"] }
+                : {}),
             },
           },
         },
       };
+      const policy = {
+        id: "repeat-native",
+        agentId: "main",
+        originatingDeviceId: "voice-client",
+        nodeId: "paired-node",
+        appId: app.appId,
+        appRevision: app.appRevision,
+        expiresAtMs: Date.now() + 60_000,
+      };
+      if (policyMode && policyMode !== "policy-spoken-overlap") {
+        if (policyMode === "policy-mismatch-agentId") {
+          policy.agentId = "other";
+        }
+        if (policyMode === "policy-mismatch-originatingDeviceId") {
+          policy.originatingDeviceId = "other";
+        }
+        if (policyMode === "policy-mismatch-nodeId") {
+          policy.nodeId = "other";
+        }
+        if (policyMode === "policy-mismatch-appId") {
+          policy.appId = "linux-desktop:other.desktop";
+        }
+        if (policyMode === "policy-mismatch-appRevision") {
+          policy.appRevision = "b".repeat(64);
+        }
+        config.talk = { realtime: { appLaunchPolicies: [policy] } };
+      }
+      const originContext = {};
+      const originConnection = new AbortController();
+      let originRequestCurrent = true;
+      const ingress = captureGatewayDeviceRevocation(
+        originContext,
+        { deviceId: "voice-client", role: "operator" },
+        () => originRequestCurrent,
+        originConnection.signal,
+        { isCurrent: () => true, subscribe: () => () => {} },
+      );
+      const origin = policyMode
+        ? captureTalkVoiceOrigin({
+            client: {
+              ...sharingPolicyClient({ deviceId: "voice-client" }),
+              isDeviceTokenAuth: policyMode !== "policy-shared-token",
+            },
+            hasCurrentClientAuthority: ingress.isCurrent,
+          })
+        : undefined;
       setRuntimeConfigSnapshot(config, config);
       saveExecApprovals({
         version: 1,
         agents: {
           main: {
-            security: mode === "exec-denied" ? "deny" : "allowlist",
+            security:
+              mode === "exec-denied" || policyMode === "policy-host-denied" ? "deny" : "allowlist",
             ask: "off",
             allowlist: [{ pattern: executable }],
           },
@@ -152,7 +239,51 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
       } = createInstalledAppLoopbackTransport(registry, {
         beforeProgress: () => {
           trace.push("node-ready");
-          expect(snapshotClientVoiceConfirmationStateForTest().approvedGrants).toBe(1);
+          expect(snapshotClientVoiceConfirmationStateForTest().approvedGrants).toBe(
+            policyMode && policyMode !== "policy-spoken-overlap" ? 0 : 1,
+          );
+          if (policyMode === "policy-spoken-overlap") {
+            trace.push("spoken-grant-present-at-node-readiness");
+          }
+          if (policyMode === "policy-selected-at-permit") {
+            config.talk = {
+              realtime: { appLaunchPolicies: [{ ...policy, id: "final-policy" }] },
+            };
+            setRuntimeConfigSnapshot(config, config);
+          }
+          if (policyMode === "policy-request-ended") {
+            originRequestCurrent = false;
+          }
+          if (policyMode === "policy-detached-origin") {
+            originConnection.abort();
+            origin?.release();
+            ingress.release();
+          }
+          if (policyMode === "policy-run-replaced") {
+            const voiceSessionId = createOrResumeClientVoiceSession({
+              agentId: "main",
+              sessionKey,
+              origin: "client",
+              transcriptCapable: true,
+            });
+            registerClientVoiceConsultRun({
+              agentId: "main",
+              sessionKey,
+              voiceSessionId,
+              runId: "app-run",
+              originAuthority: origin,
+            });
+          }
+          if (policyMode === "policy-revoke") {
+            config.talk = { realtime: { appLaunchPolicies: [] } };
+            setRuntimeConfigSnapshot(config, config);
+          }
+          if (policyMode === "policy-expire") {
+            vi.spyOn(Date, "now").mockReturnValue(policy.expiresAtMs);
+          }
+          if (policyMode === "policy-device-revoke") {
+            invalidateGatewayDeviceRevocation(originContext, "voice-client", "operator");
+          }
           if (mode === "caller-closed") {
             admission.close();
             trace.push("caller-revoked-before-permit");
@@ -164,7 +295,7 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
         holdCancellation: mode === "cancel-in-flight-after-permit",
         onAllowPermit: async () => {
           trace.push("allow-issued");
-          expect(appSpawns()).toHaveLength(0);
+          expect(appSpawns()).toHaveLength(policyMode ? permits.length - 1 : 0);
           if (mode === "caller-revoked-after-permit") {
             admission.close();
             expect(getAdmittedRunDelegatedAuthority(admitted)).toBeUndefined();
@@ -329,6 +460,7 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
           sessionKey,
           voiceSessionId,
           runId: "app-run",
+          originAuthority: origin,
         });
         const tool = wrapToolWithBeforeToolCallHook(
           createNodesTool({ agentId: "main", agentSessionKey: sessionKey, config }),
@@ -355,10 +487,130 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
               appId: app.appId,
               appRevision: app.appRevision,
             };
+            if (policyMode && policyMode !== "policy-spoken-overlap") {
+              const launch = (id: string, params = launchParams) =>
+                tool.execute(id, { ...params }).then(
+                  (value) => ({ value, error: undefined }),
+                  (error: unknown) => ({ value: undefined, error: String(error) }),
+                );
+              const result = await launch("policy-first");
+              const effect = clientVoiceSessionTesting
+                .readRecord("main", voiceSessionId)
+                ?.effects.find(
+                  (effectEntry) =>
+                    effectEntry.runId === "app-run" && effectEntry.toolCallId === "policy-first",
+                );
+              if (
+                policyMode === "policy-repeat" ||
+                policyMode === "policy-selected-at-permit" ||
+                policyMode === "policy-detached-origin" ||
+                policyMode === "policy-request-ended"
+              ) {
+                expect(result.error).toBeUndefined();
+                expect(result.value?.details).toMatchObject({
+                  payload: {
+                    status: "process-started",
+                    appId: app.appId,
+                    appRevision: app.appRevision,
+                    pid: appSpawns()[0]?.pid,
+                  },
+                });
+                expect(effect).toMatchObject({
+                  status: "succeeded",
+                  appLaunchAuthorization: {
+                    policyId:
+                      policyMode === "policy-selected-at-permit" ? "final-policy" : policy.id,
+                    stage: "permit-authorized",
+                  },
+                });
+                expect((await launch("policy-second")).error).toBeUndefined();
+                expect(appSpawns()).toHaveLength(2);
+                for (const child of appSpawns()) {
+                  expect(child.exitCode).toBeNull();
+                  expect(() => process.kill(child.pid!, 0)).not.toThrow();
+                }
+                const changed = await launch("changed-scope", {
+                  ...launchParams,
+                  appRevision: "b".repeat(64),
+                });
+                expect(changed.error ?? JSON.stringify(changed.value)).toContain(
+                  "VOICE_CONFIRMATION_REQUIRED",
+                );
+                config.talk = { realtime: { appLaunchPolicies: [] } };
+                setRuntimeConfigSnapshot(config, config);
+                const replay = await launch("revoked-replay");
+                expect(replay.error ?? JSON.stringify(replay.value)).toContain(
+                  "VOICE_CONFIRMATION_REQUIRED",
+                );
+                expect(appSpawns()).toHaveLength(2);
+                const spoof = await tool
+                  .execute("model-policy-spoof", {
+                    ...launchParams,
+                    appLaunchAuthorization: { policyId: policy.id, stage: "permit-authorized" },
+                  })
+                  .catch((error: unknown) => String(error));
+                expect(JSON.stringify(spoof)).toContain("VOICE_CONFIRMATION_REQUIRED");
+                expect(
+                  clientVoiceSessionTesting
+                    .readRecord("main", voiceSessionId)
+                    ?.effects.find((effectEntry) => effectEntry.toolCallId === "model-policy-spoof")
+                    ?.appLaunchAuthorization,
+                ).toBeUndefined();
+                expect(appSpawns()).toHaveLength(2);
+                expect(permits).toEqual([
+                  { type: "installed-app-launch.allow", validForMs: 5000 },
+                  { type: "installed-app-launch.allow", validForMs: 5000 },
+                ]);
+              } else if (policyMode === "policy-native-error") {
+                expect(result.error).toContain("ENOENT");
+                expect(appSpawns()).toHaveLength(1);
+                expect(appSpawns()[0]?.pid).toBeUndefined();
+                expect(permits).toEqual([{ type: "installed-app-launch.allow", validForMs: 5000 }]);
+                expect(effect).toMatchObject({
+                  status: "failed",
+                  appLaunchAuthorization: { policyId: policy.id, stage: "permit-authorized" },
+                });
+              } else {
+                expect(effect?.appLaunchAuthorization).toBeUndefined();
+                const error = result.error ?? JSON.stringify(result.value);
+                if (
+                  policyMode.startsWith("policy-mismatch-") ||
+                  policyMode === "policy-shared-token"
+                ) {
+                  expect(error).toContain("VOICE_CONFIRMATION_REQUIRED");
+                  expect(nativeCommands).toEqual(["device.apps"]);
+                } else if (policyMode === "policy-host-denied") {
+                  expect(error).toContain("security=deny");
+                  expect(permits).toEqual([]);
+                } else if (policyMode === "policy-node-denied") {
+                  expect(error).toMatch(/not advertise|not allow|denied/);
+                  expect(permits).toEqual([]);
+                } else {
+                  expect(error).toMatch(
+                    /authorization is no longer current|VOICE_CONFIRMATION_REQUIRED|run binding changed/,
+                  );
+                  expect(permits).toEqual([{ type: "installed-app-launch.deny" }]);
+                }
+                expect(appSpawns()).toHaveLength(0);
+                if (policyMode === "policy-run-replaced") {
+                  invalidateGatewayDeviceRevocation(originContext, "voice-client", "operator");
+                }
+                const replay = await launch("policy-replay");
+                expect(replay.error ?? JSON.stringify(replay.value)).not.toContain(
+                  '"status":"process-started"',
+                );
+                expect(appSpawns()).toHaveLength(0);
+              }
+              expect(snapshotClientVoiceConfirmationStateForTest().approvedGrants).toBe(0);
+              return;
+            }
             const initial = await tool
               .execute("needs-confirmation", { ...launchParams })
               .catch((error: unknown) => String(error));
             expect(JSON.stringify(initial)).toContain("VOICE_CONFIRMATION_REQUIRED");
+            if (policyMode === "policy-spoken-overlap") {
+              trace.push("ordinary-confirmation-required");
+            }
             expect(appSpawns()).toHaveLength(0);
             expect(nativeCommands).toEqual(["device.apps"]);
             // Real transcript persistence arms the ordinary grant; no synthetic receipt or model inference.
@@ -384,6 +636,13 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
               expect(
                 bindAuthorizedClientVoiceConfirmation({ grant: grant!, runId: "app-run" }),
               ).toBe(true);
+            }
+            if (policyMode === "policy-spoken-overlap") {
+              trace.push("persisted-yes-grant-bound");
+              // The ordinary challenge and persisted yes precede operator policy addition.
+              config.talk = { realtime: { appLaunchPolicies: [policy] } };
+              setRuntimeConfigSnapshot(config, config);
+              trace.push("matching-policy-added-after-spoken-grant");
             }
             const result = await tool
               .execute("launch", { ...launchParams }, invocation.signal)
@@ -422,11 +681,22 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
               expect(() => process.kill(child.pid!, 0)).not.toThrow();
               expect(permits).toEqual([{ type: "installed-app-launch.allow", validForMs: 5000 }]);
               if (mode === "yes") {
+                if (policyMode === "policy-spoken-overlap") {
+                  expect(snapshotClientVoiceConfirmationStateForTest().approvedGrants).toBe(0);
+                  trace.push("spoken-grant-consumed-at-final-permit");
+                  config.talk = { realtime: { appLaunchPolicies: [] } };
+                  setRuntimeConfigSnapshot(config, config);
+                  trace.push("policy-revoked");
+                }
                 const replay = await tool
                   .execute("replay", { ...launchParams })
                   .catch((error: unknown) => String(error));
                 expect(JSON.stringify(replay)).toContain("VOICE_CONFIRMATION_REQUIRED");
                 expect(appSpawns()).toHaveLength(1);
+                expect(snapshotClientVoiceConfirmationStateForTest().approvedGrants).toBe(0);
+                if (policyMode === "policy-spoken-overlap") {
+                  trace.push("revoked-replay-challenged-no-second-process");
+                }
               }
             } else {
               const reasons = {
@@ -462,6 +732,8 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
             trace.push("cleanup-joined pid=" + child.pid);
           }
         }
+        origin?.release();
+        ingress.release();
         releaseCancellation();
         admission.close();
         source.release();
@@ -471,6 +743,7 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
           "APP_LAUNCH_HANDOFF_PROOF " +
             JSON.stringify({
               mode,
+              scenario,
               trace,
               permitCount: permits.length,
               cancelCount: cancellations.length,

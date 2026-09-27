@@ -1,7 +1,12 @@
 /** In-memory spoken confirmation binding for high-impact Talk actions. */
 import { randomUUID } from "node:crypto";
+import { getRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { InstalledAppLaunchToolParamsSchema } from "../infra/installed-app-launch.js";
 import { createDeferredCore, type Deferred } from "../shared/deferred.js";
+import {
+  resolveClientVoiceAppLaunchPolicy,
+  type ClientVoiceAppLaunchOrigin,
+} from "./client-voice-app-launch-policy.js";
 import {
   requiresHighImpactVoiceConfirmation,
   stableToolFingerprint,
@@ -327,6 +332,7 @@ export function noteClientVoiceConfirmationUtterance(params: {
 }
 
 type ClientVoiceToolConfirmationPolicyParams = {
+  originAuthority?: ClientVoiceAppLaunchOrigin;
   appLaunchEffectBoundary?: boolean;
   agentId?: string;
   voiceSessionId?: string;
@@ -339,7 +345,7 @@ type ClientVoiceToolConfirmationPolicyParams = {
 };
 
 type ClientVoiceToolConfirmationPolicyResult =
-  | { allowed: true }
+  | { allowed: true; policyId?: string; policyExpiresAtMs?: number }
   | { allowed: false; reason: string };
 
 function resolveClientVoiceToolConfirmationPolicy(
@@ -363,11 +369,28 @@ function resolveClientVoiceToolConfirmationPolicy(
   const fingerprint = stableToolFingerprint(params.toolName, params.toolParams);
   const scopeKey = confirmationScopeKey(params.agentId, params.voiceSessionId);
   const appLaunch =
-    params.toolName === "nodes" &&
-    InstalledAppLaunchToolParamsSchema.safeParse(params.toolParams).success;
-  // Installed-app preparation still crosses target and independent node policy awaits.
-  // Its effect owner consumes the one-shot grant at readiness, not in the tool wrapper.
-  const consumeHere = consume && (!appLaunch || params.appLaunchEffectBoundary === true);
+    params.toolName === "nodes"
+      ? InstalledAppLaunchToolParamsSchema.safeParse(params.toolParams)
+      : undefined;
+  // App preparation is not the effect boundary, even when a reusable policy matches.
+  const consumeHere = consume && (!appLaunch?.success || params.appLaunchEffectBoundary === true);
+  if (appLaunch?.success) {
+    const policy = resolveClientVoiceAppLaunchPolicy({
+      agentId: params.agentId,
+      origin: params.originAuthority,
+      nodeId: appLaunch.data.node,
+      action: appLaunch.data,
+      policies: getRuntimeConfigSnapshot()?.talk?.realtime?.appLaunchPolicies ?? [],
+      nowMs: now,
+    });
+    if (policy) {
+      if (consumeHere) {
+        // This exact action also spends its spoken grant; policy revocation cannot revive it.
+        resolveApprovedFingerprint(scopeKey, params.runId, fingerprint, now, true);
+      }
+      return { allowed: true, policyId: policy.id, policyExpiresAtMs: policy.expiresAtMs };
+    }
+  }
   if (resolveApprovedFingerprint(scopeKey, params.runId, fingerprint, now, consumeHere)) {
     return { allowed: true };
   }

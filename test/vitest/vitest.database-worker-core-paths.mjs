@@ -1,5 +1,10 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
+  "src/gateway/talk/agent-consult.origin.test.ts",
+  "src/gateway/talk/client-voice-origin.producer.test.ts",
+  "src/agents/tool-surface-plan.voice-policy.test.ts",
+  "src/gateway/talk/client-agent-consult.origin.test.ts",
+  "src/talk/client-voice-app-launch-policy.test.ts",
   "test/client-voice-source-outcome.codex.integration.test.ts",
   "test/e2e/qa-lab/runtime/gateway-loopback-lan-access.test.ts",
   "src/channels/message/durable-receive.test.ts",
