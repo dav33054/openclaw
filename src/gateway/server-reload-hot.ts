@@ -15,6 +15,7 @@ import { formatErrorMessage } from "../infra/errors.js";
 import { resetDirectoryCache } from "../infra/outbound/target-resolver.js";
 import { setGatewayRestartPolicy } from "../infra/restart.js";
 import { PluginRuntimeApplicationError, getPluginRuntimeGeneration } from "../plugins/lifecycle.js";
+import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-request-scope.js";
 import type { ChannelKind, GatewayReloadPlan } from "./config-reload-plan.js";
 import {
   reloadPlanNeedsRecovery,
@@ -146,6 +147,7 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
       const { buildGatewayCronService } = await import("./server-cron.js");
       assertCronReloadCurrent();
       nextState.cronState = buildGatewayCronService({
+        scheduler: params.scheduler,
         cfg: nextConfig,
         deps: params.deps,
         broadcast: params.broadcast,
@@ -211,15 +213,17 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
         { waitForReplacement: true, ...modelRuntimeRefreshScope },
       );
       return async () => {
-        await mrReload.refreshModelRuntimeAfterHotReload({
-          config: previousConfig,
-          agentIds: modelRuntimeAgentIds,
-          pluginMetadataSnapshot: params.getPluginMetadataSnapshot?.(),
-          isPublicationCurrent: () =>
-            isCurrentGatewayReloadGeneration(myGeneration) &&
-            !isLifecycleReloadAborted() &&
-            !isRestartRetryStopped(),
-        });
+        await withPluginRuntimeRegistryScope(params.getPluginRegistry(), () =>
+          mrReload.refreshModelRuntimeAfterHotReload({
+            config: previousConfig,
+            agentIds: modelRuntimeAgentIds,
+            pluginMetadataSnapshot: params.getPluginMetadataSnapshot?.(),
+            isPublicationCurrent: () =>
+              isCurrentGatewayReloadGeneration(myGeneration) &&
+              !isLifecycleReloadAborted() &&
+              !isRestartRetryStopped(),
+          }),
+        );
       };
     };
     let activePluginChannelsAfterReload: ReadonlySet<ChannelKind> | null = null;
@@ -574,11 +578,13 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
     }
 
     try {
-      await mrReload.refreshModelRuntimeAfterHotReload({
-        config: nextConfig,
-        agentIds: modelRuntimeAgentIds,
-        pluginMetadataSnapshot: params.getPluginMetadataSnapshot?.(),
-      });
+      await withPluginRuntimeRegistryScope(params.getPluginRegistry(), () =>
+        mrReload.refreshModelRuntimeAfterHotReload({
+          config: nextConfig,
+          agentIds: modelRuntimeAgentIds,
+          pluginMetadataSnapshot: params.getPluginMetadataSnapshot?.(),
+        }),
+      );
     } catch (err) {
       scheduleRecoveryRestart("prepared model runtime reload", err);
       return "applied-restart-required";
@@ -618,6 +624,7 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
               cfg: nextConfig,
               log: params.logHooks,
               signal: restartAbortController.signal,
+              scheduler: params.scheduler,
               onSkipped: () =>
                 params.logHooks.info(
                   "skipping gmail watcher restart (OPENCLAW_SKIP_GMAIL_WATCHER=1)",
