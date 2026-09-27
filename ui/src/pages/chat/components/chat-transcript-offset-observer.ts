@@ -5,6 +5,7 @@ import type { TranscriptEndAnchor } from "./chat-transcript-end-anchor.ts";
 import { maxTranscriptScrollOffset } from "./chat-transcript-geometry.ts";
 import type { ChatTranscriptInteractionAnchor } from "./chat-transcript-interaction-anchor.ts";
 import type { TranscriptPrependAnchor } from "./chat-transcript-prepend-anchor.ts";
+import { TranscriptResizeAnchor } from "./chat-transcript-resize-anchor.ts";
 import {
   publishTranscriptScroll,
   subscribeTranscriptScroll,
@@ -30,6 +31,7 @@ type TranscriptOffsetState = {
   pendingInteractionAnchor: ChatTranscriptInteractionAnchor | null;
   syncNativeOffset: (() => void) | null;
   recordProgrammaticScroll: ((before: number, after: number, maintenance: boolean) => void) | null;
+  recordReaderScroll: ((from: number) => void) | null;
 };
 
 /** Create the state shared by native input observation and transcript commands. */
@@ -50,6 +52,7 @@ export function createTranscriptOffsetState(): TranscriptOffsetState {
     pendingInteractionAnchor: null,
     syncNativeOffset: null,
     recordProgrammaticScroll: null,
+    recordReaderScroll: null,
   };
 }
 
@@ -141,6 +144,25 @@ type OffsetOwner = {
   onComposerLayout(changed: boolean): void;
 };
 
+/** Resize corrections write through the same maintenance path as TanStack. */
+export function createTranscriptResizeAnchor(state: TranscriptOffsetState): TranscriptResizeAnchor {
+  const anchor = new TranscriptResizeAnchor({
+    hasScrollCommand: () => state.scrollCommand !== null || state.pendingScrollOffset !== null,
+    interactionRow: () => state.pendingInteractionAnchor?.row ?? null,
+    writeOffset: (offset, instance) => {
+      scrollTranscriptOffset(
+        state,
+        offset,
+        { adjustments: undefined, behavior: undefined },
+        instance,
+      );
+      instance.scrollOffset = instance.scrollElement?.scrollTop ?? offset;
+    },
+  });
+  state.recordReaderScroll = (from) => anchor.noteReaderScroll(from);
+  return anchor;
+}
+
 /** Observe native offsets and input with the transcript's touch and command lifecycle. */
 export function observeTranscriptOffset(
   owner: OffsetOwner,
@@ -221,6 +243,7 @@ export function observeTranscriptOffset(
       }
       // Input can precede projection capture; carry its later native movement.
       owner.prependAnchor.moveWithReader(delta);
+      owner.state.recordReaderScroll?.(offset - delta);
     }
     publish({
       type: "offset",
