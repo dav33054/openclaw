@@ -731,5 +731,5 @@ async function acquireLockFile(
       : lastPayload?.role && lastPayload.role !== "gateway"
         ? `state directory is locked by ${lastPayload.role}${ownerPid}`
         : `gateway already running${ownerPid}`;
-  throw new GatewayLockError(`${owner}; lock timeout after ${timeoutMs}ms`);
+  throw new GatewayLockError(`${owner}; lock timeout after ${timeoutMs}ms at ${lockPath}`);
 }
