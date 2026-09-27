@@ -15,8 +15,9 @@ import {
   getPluginInstanceOwner,
   pluginInstanceState,
   resolvePluginInstanceOwner,
+  type PluginInstanceOwner,
 } from "./plugin-instance-scope.js";
-import type { PluginRecord, PluginRegistry } from "./registry-types.js";
+import type { PluginRecord, PluginRegistry, PluginRegistryGatewayOwner } from "./registry-types.js";
 import { getPluginRegistryState } from "./runtime-state.js";
 
 type PluginRegistryLifecycleState = {
@@ -40,12 +41,6 @@ type PluginRegistryLifecycleStore = {
   registryResourceOwners?: WeakMap<PluginRegistry, PluginRegistry>;
   registryLifetimes?: WeakMap<PluginRegistry, PluginRegistryLifetime>;
   gatewayOwners?: WeakMap<PluginRegistry, PluginRegistryGatewayOwner | null>;
-};
-
-/** The Gateway registry owner that admitted work in a registry generation. */
-export type PluginRegistryGatewayOwner = {
-  /** The owner's published registry while it stays open; closing owners return undefined. */
-  readonly current: () => PluginRegistry | undefined;
 };
 
 const lifecycle = resolveGlobalSingleton<PluginRegistryLifecycleStore>(
@@ -111,6 +106,23 @@ export function getPluginRegistryGatewayOwner(
   return gatewayOwners.get(getPluginRegistryResourceOwner(registry)) ?? undefined;
 }
 
+/** Retired callbacks may still need their admitting Gateway to recognize removed plugins. */
+export function getPluginInstanceGatewayOwner(owner: PluginInstanceOwner) {
+  return owner.registry
+    ? getPluginRegistryGatewayOwner(owner.registry)
+    : owner.retiredGatewayOwner?.deref();
+}
+
+/** Drop the back-reference only after physical cleanup and all admitted work have settled. */
+export function releasePluginInstanceRegistry(owner: PluginInstanceOwner): void {
+  if (!owner.revoked) {
+    throw new Error("Cannot release an active plugin instance registry");
+  }
+  const gateway = getPluginInstanceGatewayOwner(owner);
+  owner.retiredGatewayOwner = gateway ? new WeakRef(gateway) : undefined;
+  owner.registry = undefined;
+}
+
 /** The creation owner lends existing custody; lookup never takes ownership of an external host. */
 export function getPluginRegistryLifetime(registry: PluginRegistry) {
   return registryLifetimes.get(getPluginRegistryResourceOwner(registry));
@@ -147,7 +159,7 @@ export function getPluginLoaderCacheState(cache = getPluginCache()) {
     const registries = new Set<PluginRegistry>();
     for (const instance of cache.instances) {
       const owner = getPluginInstanceOwner(instance);
-      if (!owner) {
+      if (!owner?.registry) {
         continue;
       }
       // Publication transfers exact instances to their runtime owner, including adopted records.
