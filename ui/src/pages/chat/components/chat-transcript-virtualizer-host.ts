@@ -37,6 +37,7 @@ import {
 import { renderChatTranscriptLayout, type TranscriptRow } from "./chat-transcript-layout.ts";
 import {
   createTranscriptOffsetState,
+  createTranscriptResizeAnchor,
   isTranscriptMaintenanceScroll,
   isTranscriptManualScroll,
   isTranscriptProgrammaticScroll,
@@ -170,6 +171,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
   private rowIndexesByKey = new Map<string, number>();
   private messageRowKeysById: ReadonlyMap<string, string> = new Map();
   private readonly prependAnchor = new TranscriptPrependAnchor();
+  private readonly resizeAnchor = createTranscriptResizeAnchor(this.offsetState);
   private candidateMessageRowKeysById: ReadonlyMap<string, string> = new Map();
   private candidateMessageRowsByKey: ReadonlyMap<string, string> = new Map();
   private renderPreviousRows: (() => TemplateResult) | null = null;
@@ -253,6 +255,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
           callback,
         ),
       measureElement: (element, entry, instance) => {
+        this.resizeAnchor.observeRow(element);
         const size = measureTranscriptRow(element, entry, instance);
         if (
           element.dataset.virtualRowKey === "presence:typing" &&
@@ -270,6 +273,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
       scrollEndThreshold: -1,
       overscan: CHAT_TRANSCRIPT_OVERSCAN,
     });
+    this.resizeAnchor.attach(this.virtualizerController.getVirtualizer());
     this.rowRefs = new TranscriptRowRefs(this.virtualizerController.getVirtualizer(), {
       // Preserve initial positioning and smooth-scroll measurement gates.
       canMeasureVisibleRows: () =>
