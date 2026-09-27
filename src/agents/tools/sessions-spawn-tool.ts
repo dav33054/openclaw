@@ -314,6 +314,8 @@ export function createSessionsSpawnTool(
     currentMessagingTarget?: string;
     currentChannelId?: string;
     currentThreadTs?: string;
+    /** Host-minted provenance of the ambient current conversation for binding. */
+    currentConversationOrigin?: import("../../gateway/mcp-grant-store.js").McpCurrentConversationOrigin;
     currentMessageId?: string | number;
     sandboxed?: boolean;
     config?: OpenClawConfig;
@@ -602,6 +604,8 @@ export function createSessionsSpawnTool(
                 agentThreadId: opts?.agentThreadId,
                 currentMessagingTarget: opts?.currentMessagingTarget,
                 currentChannelId: opts?.currentChannelId,
+                currentThreadTs: opts?.currentThreadTs,
+                currentConversationOrigin: opts?.currentConversationOrigin,
                 currentMessageId: opts?.currentMessageId,
                 agentGroupId: opts?.agentGroupId ?? undefined,
                 agentGroupSpace: opts?.agentGroupSpace,
@@ -660,6 +664,8 @@ export function createSessionsSpawnTool(
               agentThreadId: opts?.agentThreadId,
               currentMessagingTarget: opts?.currentMessagingTarget ?? opts?.currentChannelId,
               currentChannelId: opts?.currentChannelId,
+              currentThreadTs: opts?.currentThreadTs,
+              currentConversationOrigin: opts?.currentConversationOrigin,
               currentMessageId: opts?.currentMessageId,
               agentGroupId: opts?.agentGroupId,
               agentGroupChannel: opts?.agentGroupChannel,
