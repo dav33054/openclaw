@@ -35,7 +35,7 @@ During startup or restart, the Gateway waits up to five minutes for another Open
 - If either lock is actively held, startup retries for up to 5 seconds (default) before giving up:
 
   ```text
-  GatewayLockError("gateway already running (pid <pid>); lock timeout after <ms>ms")
+  GatewayLockError("gateway already running (pid <pid>); lock timeout after <ms>ms at <lockPath>")
   ```
 
 ### Socket bind
