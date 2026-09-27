@@ -259,7 +259,7 @@ describe("AcpSessionManager runtime config", () => {
           agentSessionId: "agent-oneshot",
         }),
         reason,
-        discardPersistentState: true,
+        discardPersistentState: false,
       });
     },
   );

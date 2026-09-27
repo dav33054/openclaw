@@ -109,7 +109,9 @@ export async function runManagerCloseSession(params: {
       await ensuredRuntime.close({
         handle,
         reason: input.reason,
-        discardPersistentState: input.discardPersistentState,
+        // Oneshots already start fresh. Backend-history discard may reconnect
+        // just to send session/close; retry the same release as finalization.
+        discardPersistentState: meta.mode === "oneshot" ? false : input.discardPersistentState,
       });
       runtimeClosed = true;
       if (!params.isCurrentActor()) {
