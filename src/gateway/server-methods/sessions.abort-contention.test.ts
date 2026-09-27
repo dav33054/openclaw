@@ -36,8 +36,7 @@ it("reports typed state contention from sessions.abort", async () => {
     isWebchatConnect: () => false,
     extraHandlers: { "sessions.abort": sessionAbortHandlers["sessions.abort"]! },
   });
-  // eslint-disable-next-line no-console
-  console.log(`CONTENTION_PROBE ${JSON.stringify(respond.mock.calls)}`);
+  console.info(`CONTENTION_PROBE ${JSON.stringify(respond.mock.calls)}`);
   expect(respond).toHaveBeenCalledOnce();
   expect(respond.mock.calls[0]?.[2]).toMatchObject({
     code: "UNAVAILABLE",
