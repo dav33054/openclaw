@@ -159,76 +159,110 @@ describe("AcpSessionManager runtime config", () => {
     expect(metaState.currentMeta.identity?.agentSessionId).toBe("agent-fresh");
   });
 
-  it("reconciles oneshot ACP identity from runtime status before closing after a turn", async () => {
-    const runtimeState = createRuntime();
-    runtimeState.ensureSession.mockResolvedValue({
-      sessionKey: "agent:codex:acp:session-1",
-      backend: "acpx",
-      runtimeSessionName: "runtime-1",
-      backendSessionId: "acpx-oneshot",
-    });
-    runtimeState.getStatus.mockResolvedValue({
-      summary: "status=done",
-      backendSessionId: "acpx-oneshot",
-      agentSessionId: "agent-oneshot",
-      details: { status: "done" },
-    });
-    hoisted.requireAcpRuntimeBackendMock.mockReturnValue({
-      id: "acpx",
-      runtime: runtimeState.runtime,
-    });
+  it.each([
+    { closeFails: false, restart: false, reason: "terminal-task-cleanup" },
+    { closeFails: true, restart: false, reason: "terminal-task-cleanup" },
+    { closeFails: false, restart: true, reason: "orphan-task-cleanup" },
+  ])(
+    "closes the original oneshot after finalization ($closeFails, $restart, $reason)",
+    async ({ closeFails, restart, reason }) => {
+      const runtimeState = createRuntime();
+      if (closeFails) {
+        runtimeState.close.mockRejectedValueOnce(new Error("close interrupted"));
+      }
+      runtimeState.ensureSession.mockResolvedValue({
+        sessionKey: "agent:codex:acp:session-1",
+        backend: "acpx",
+        runtimeSessionName: "runtime-1",
+        acpxRecordId: "oneshot-record-1",
+        backendSessionId: "acpx-oneshot",
+      });
+      runtimeState.getStatus.mockResolvedValue({
+        summary: "status=done",
+        backendSessionId: "acpx-oneshot",
+        agentSessionId: "agent-oneshot",
+        details: { status: "done" },
+      });
+      hoisted.requireAcpRuntimeBackendMock.mockReturnValue({
+        id: "acpx",
+        runtime: runtimeState.runtime,
+      });
 
-    const metaState: { currentMeta: SessionAcpMeta | undefined } = { currentMeta: undefined };
-    hoisted.readAcpSessionEntryMock.mockImplementation((paramsUnknown: unknown) => {
-      const sessionKey =
-        (paramsUnknown as { sessionKey?: string }).sessionKey ?? "agent:codex:acp:session-1";
-      return {
-        sessionKey,
-        storeSessionKey: sessionKey,
-        acp: metaState.currentMeta,
-      };
-    });
-    installMutableAcpSessionMetaUpsert(metaState);
+      const metaState: { currentMeta: SessionAcpMeta | undefined } = { currentMeta: undefined };
+      hoisted.readAcpSessionEntryMock.mockImplementation((paramsUnknown: unknown) => {
+        const sessionKey =
+          (paramsUnknown as { sessionKey?: string }).sessionKey ?? "agent:codex:acp:session-1";
+        return {
+          sessionKey,
+          storeSessionKey: sessionKey,
+          acp: metaState.currentMeta,
+        };
+      });
+      installMutableAcpSessionMetaUpsert(metaState);
 
-    const manager = new AcpSessionManager();
-    await manager.initializeSession({
-      cfg: baseCfg,
-      sessionKey: "agent:codex:acp:session-1",
-      agent: "codex",
-      mode: "oneshot",
-    });
+      const manager = new AcpSessionManager();
+      await manager.initializeSession({
+        cfg: baseCfg,
+        sessionKey: "agent:codex:acp:session-1",
+        agent: "codex",
+        mode: "oneshot",
+      });
 
-    expectRecordFields(metaState.currentMeta?.identity, {
-      state: "pending",
-      acpxSessionId: "acpx-oneshot",
-      source: "ensure",
-    });
+      expectRecordFields(metaState.currentMeta?.identity, {
+        state: "pending",
+        acpxSessionId: "acpx-oneshot",
+        source: "ensure",
+      });
 
-    await manager.runTurn({
-      provenance: "system",
-      cfg: baseCfg,
-      sessionKey: "agent:codex:acp:session-1",
-      text: "do work",
-      mode: "prompt",
-      requestId: "run-1",
-    });
+      await manager.runTurn({
+        provenance: "system",
+        cfg: baseCfg,
+        sessionKey: "agent:codex:acp:session-1",
+        text: "do work",
+        mode: "prompt",
+        requestId: "run-1",
+      });
 
-    expect(runtimeState.getStatus).toHaveBeenCalledTimes(2);
-    const closeInput = mockCallArg(runtimeState.close);
-    expectRecordFields(closeInput, {
-      reason: "oneshot-complete",
-    });
-    expectRecordFields(closeInput.handle, {
-      backendSessionId: "acpx-oneshot",
-      agentSessionId: "agent-oneshot",
-    });
-    expectRecordFields(metaState.currentMeta?.identity, {
-      state: "resolved",
-      acpxSessionId: "acpx-oneshot",
-      agentSessionId: "agent-oneshot",
-      source: "status",
-    });
-  });
+      expect(runtimeState.getStatus).toHaveBeenCalledTimes(2);
+      const closeInput = mockCallArg(runtimeState.close);
+      expectRecordFields(closeInput, {
+        reason: "oneshot-complete",
+      });
+      expectRecordFields(closeInput.handle, {
+        backendSessionId: "acpx-oneshot",
+        agentSessionId: "agent-oneshot",
+      });
+      expectRecordFields(metaState.currentMeta?.identity, {
+        state: "resolved",
+        acpxSessionId: "acpx-oneshot",
+        agentSessionId: "agent-oneshot",
+        source: "status",
+      });
+      const cleanupManager = restart ? new AcpSessionManager() : manager;
+      const result = await cleanupManager.closeSession({
+        cfg: baseCfg,
+        sessionKey: "agent:codex:acp:session-1",
+        reason,
+        discardPersistentState: true,
+        clearMeta: true,
+      });
+      expect(result).toMatchObject({ runtimeClosed: true, metaCleared: true });
+      expect(runtimeState.ensureSession).toHaveBeenCalledTimes(1);
+      expect(runtimeState.close).toHaveBeenCalledTimes(2);
+      expect(runtimeState.close).toHaveBeenLastCalledWith({
+        handle: expect.objectContaining({
+          sessionKey: "agent:codex:acp:session-1",
+          agentId: "codex",
+          runtimeSessionName: "runtime-1",
+          acpxRecordId: "oneshot-record-1",
+          backendSessionId: "acpx-oneshot",
+          agentSessionId: "agent-oneshot",
+        }),
+        reason,
+        discardPersistentState: true,
+      });
+    },
+  );
 
   it("reconciles prompt-learned agent session IDs even when runtime status omits them", async () => {
     const runtimeState = createRuntime();
