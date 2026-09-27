@@ -54,29 +54,36 @@ let state: OpenClawTestState | undefined;
 let providerServer: Server | undefined;
 let gateway: Awaited<ReturnType<typeof startGatewayWithClient>> | undefined;
 let lockChild: ChildProcess | undefined;
-let lockReleased = false;
 
-async function releaseLockChild(): Promise<void> {
+/**
+ * Releases the foreign lock and reports whether the child rolled back and exited
+ * by itself. Only an unresponsive child is killed, so a still-held lock cannot
+ * hide behind the five-second exit timeout.
+ */
+async function releaseLockChild(): Promise<boolean> {
   const child = lockChild;
   lockChild = undefined;
   if (!child) {
-    return;
+    return true;
   }
-  if (!lockReleased && child.connected) {
+  if (child.exitCode !== null) {
+    return true;
+  }
+  if (child.connected) {
     child.send({ release: true });
   }
-  try {
-    if (child.exitCode === null) {
-      await once(child, "close", { signal: AbortSignal.timeout(5_000) }).catch(() => undefined);
-    }
-  } finally {
+  const exitedOnRelease = await once(child, "close", { signal: AbortSignal.timeout(5_000) }).then(
+    () => true,
+    () => false,
+  );
+  if (!exitedOnRelease) {
     await stopChildProcess(child, 5_000).catch(() => undefined);
   }
+  return exitedOnRelease;
 }
 
 /** Hold the real state-lifecycle coordinator from a separate OS process. */
 async function holdStateLifecycleLock(coordinatorPath: string): Promise<void> {
-  lockReleased = false;
   const child = spawn(
     process.execPath,
     [
@@ -244,7 +251,7 @@ it(
     // is refused while it holds the lock.
     const stateDb = openOpenClawStateDatabase({ env: testState.env });
     expect(stateDb.walMaintenance.checkpoint()).toBe(false);
-    expect(String(stateDb.walMaintenance.health?.error ?? "")).toContain("state-lifecycle");
+    expect(stateDb.walMaintenance.health?.error ?? "").toContain("state-lifecycle");
 
     const outcome = await gateway.client
       .request("sessions.abort", { key: SESSION_KEY, runId }, { timeoutMs: 30_000 })
@@ -260,8 +267,9 @@ it(
       );
     console.info(`SESSIONS_ABORT_CONTENTION_LIVE ${JSON.stringify(outcome)}`);
 
-    lockReleased = true;
-    await releaseLockChild();
+    // The child must roll back over IPC and exit by itself; a kill here would
+    // hide a lock that is still held and burn the full exit timeout.
+    expect(await releaseLockChild()).toBe(true);
     for (const response of stalledResponses) {
       response.destroy();
     }
