@@ -111,7 +111,9 @@ export interface CreateAgentSessionOptions {
 
 type CreateAgentSessionInternalOptions = Pick<
   AgentSessionConfig,
-  "cleanupProviderSessionResourcesOnDispose" | "contextOverflowRecoveryOwner"
+  | "cleanupProviderSessionResourcesOnDispose"
+  | "contextOverflowRecoveryOwner"
+  | "compactionThinkingLevel"
 > & { beforeToolBatch?: InternalBeforeToolBatchHook };
 
 /** Result from createAgentSession */
@@ -612,6 +614,7 @@ async function createAgentSessionImpl(
     withSessionWriteSettlement: options.withSessionWriteSettlement,
     contextOverflowRecoveryOwner: internalOptions.contextOverflowRecoveryOwner,
     cleanupProviderSessionResourcesOnDispose,
+    compactionThinkingLevel: internalOptions.compactionThinkingLevel,
   });
   const extensionsResult = resourceLoader.getExtensions();
 
