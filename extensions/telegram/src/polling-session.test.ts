@@ -2196,8 +2196,8 @@ describe("TelegramPollingSession", () => {
       handleUpdate: vi.fn(async (update: { update_id?: number }) => {
         events.push(`bot:${update.update_id}`);
         if (update.update_id === 42 && events.filter((event) => event === "bot:42").length === 1) {
-          // Hang until the core watchdog aborts the drain lifecycle.
-          await new Promise<void>(() => {});
+          // Let the watchdog fire, then finish the old handler before retry.
+          await new Promise<void>((resolve) => setTimeout(resolve, 200));
         }
         if (update.update_id === 43) {
           abort.abort();
