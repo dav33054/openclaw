@@ -62,6 +62,18 @@ describe("failover user copy", () => {
     ).toBe("⚠️ rate limit: service overloaded, try again in 30 seconds");
   });
 
+  it("gives sanitized prompt-size guidance for a non-retryable HTTP 400", () => {
+    const raw =
+      "400 This prompt is longer than the free tier allows for a single request. Shorten it, or add credits to use this model without the free-tier cap.";
+    const copy = renderRateLimitOrOverloadedCopy({ reason: "rate_limit", raw });
+
+    expect(copy).toBe(
+      "⚠️ The provider rejected this request because the prompt exceeds its per-request limit. Shorten the prompt and try again, or choose a model with a larger limit.",
+    );
+    expect(copy).not.toContain("free-tier cap");
+    expect(copy).not.toContain("add credits");
+  });
+
   it.each([
     "Error: 400 max_tokens (384000) exceeds model's maximum output tokens (65536)",
     "OpenAI API error (400): max_output_tokens (384000) exceeds model's maximum output tokens (65536)",
