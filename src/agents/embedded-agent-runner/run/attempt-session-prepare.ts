@@ -2,6 +2,7 @@
  * Prepares transcript boundaries, session management, and active resources.
  * It may assume attempt configuration and tool inputs are ready.
  */
+
 import type { SessionTranscriptRuntimeTarget } from "../../../config/sessions/session-accessor.js";
 import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../../context-engine/host-compat.js";
 import type { ContextEngine } from "../../../context-engine/types.js";
@@ -38,11 +39,13 @@ import { createAgentSessionForEmbeddedRunner } from "../../sessions/sdk.js";
 import { withSessionManagerWrite } from "../../sessions/session-manager-write-admission.js";
 import { wrapToolDefinition } from "../../sessions/tools/tool-definition-wrapper.js";
 import { resolveToolSearchCatalogTool } from "../../tool-search.js";
+import { resolveEmbeddedCompactionThinkingLevel } from "../compaction-runtime-context.js";
 import { runContextEngineMaintenance } from "../context-engine-maintenance.js";
 import { buildEmbeddedExtensionFactories } from "../extensions.js";
 import { log } from "../logger.js";
 import { createEmbeddedAgentResourceLoader } from "../resource-loader.js";
 import { applySystemPromptToSession } from "../system-prompt.js";
+import { mapThinkingLevel, mapThinkingLevelForProvider } from "../utils.js";
 import { prepareEmbeddedAttemptClientTools } from "./attempt-client-tools.js";
 import { resolveAttemptTranscriptPolicy } from "./attempt-history.js";
 import { normalizeMessagesForLlmBoundary } from "./attempt-llm-boundary.js";
@@ -220,6 +223,19 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
   const createdSession = await createAgentSessionForEmbeddedRunner(sessionOptions, {
     // Without a resolved model budget, the outer loop cannot own bounded recovery.
     contextOverflowRecoveryOwner: attempt.contextTokenBudget === undefined ? "session" : "caller",
+    // The run's session keeps the session thinking level; compaction summaries
+    // run at the configured compaction level instead (#159424).
+    compactionThinkingLevel: mapThinkingLevel(
+      mapThinkingLevelForProvider(
+        resolveEmbeddedCompactionThinkingLevel({
+          config: attempt.config,
+          provider: attempt.provider,
+          modelId: attempt.modelId,
+          inheritedLevel: input.agentCoreThinkingLevel,
+        }),
+        attempt.model,
+      ),
+    ),
     beforeToolBatch: input.clientToolPreparation.catalogToolHookContext
       ? createToolLoopBatchAdmission(input.clientToolPreparation.catalogToolHookContext)
       : undefined,
