@@ -196,7 +196,28 @@ function prepareScratchWriteGuard(db: DatabaseSync) {
 const scratchWriteGuards = new WeakMap<DatabaseSync, ReturnType<typeof prepareScratchWriteGuard>>();
 
 /** Writes, clears, or compare-and-swaps one scratch row. */
-export function writeCronJobScratch(params: {
+const publishedScratchRevisions = new Map<string, number>();
+
+/**
+ * Revision of the last scratch change committed by this process for a job (0 after deletion).
+ * Heartbeat question checks compare it around every command instead of rereading SQLite on
+ * the Gateway thread; undefined means this process has not changed that job's scratch.
+ */
+export function getPublishedCronJobScratchRevision(jobId: string): number | undefined {
+  return publishedScratchRevisions.get(jobId);
+}
+
+export function writeCronJobScratch(
+  params: Parameters<typeof writeCronJobScratchRow>[0],
+): CronJobScratchWriteResult {
+  const result = writeCronJobScratchRow(params);
+  if (result.ok) {
+    publishedScratchRevisions.set(params.jobId, result.currentRevision);
+  }
+  return result;
+}
+
+function writeCronJobScratchRow(params: {
   storePath: string;
   jobId: string;
   content: string | null;
@@ -287,6 +308,19 @@ export function deleteCronJobScratch(
   storePath: string,
   jobId: string,
   options: OpenClawStateDatabaseOptions = {},
+  guard?: { expectedRevision: number },
+): boolean {
+  const deleted = deleteCronJobScratchRow(storePath, jobId, options, guard);
+  if (deleted) {
+    publishedScratchRevisions.set(jobId, 0);
+  }
+  return deleted;
+}
+
+function deleteCronJobScratchRow(
+  storePath: string,
+  jobId: string,
+  options: OpenClawStateDatabaseOptions,
   guard?: { expectedRevision: number },
 ): boolean {
   return runOpenClawStateWriteTransaction(

@@ -1,11 +1,19 @@
 import { performance } from "node:perf_hooks";
 import { isMainThread, threadId } from "node:worker_threads";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import {
+  heartbeatScratchNotesView,
+  replaceHeartbeatScratchNotes,
+} from "../../infra/heartbeat-questions.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { tryResolveCronJobEffectiveAgentId } from "../agent-id.js";
 import { resolveCronListSnapshotRevision } from "../list-snapshot-revision.js";
 import { assertCronJobStateTimestamps } from "../persisted-shape.js";
-import { readCronJobScratchState, writeCronJobScratch } from "../scratch-store.js";
+import {
+  type CronJobScratchState,
+  readCronJobScratchState,
+  writeCronJobScratch,
+} from "../scratch-store.js";
 import { getCronJobsStoreRevision } from "../store.js";
 import { createCronStreamSourceIdentity } from "../stream-schedule.js";
 import type { CronJob } from "../types.js";
@@ -85,11 +93,27 @@ export async function readJob(state: CronServiceState, id: string) {
   );
 }
 
+/** Heartbeat monitors expose only their notes; question groups are managed by their tool. */
+function heartbeatNotesView<T extends Pick<CronJobScratchState, "scratch">>(scratchState: T): T {
+  return scratchState.scratch
+    ? {
+        ...scratchState,
+        scratch: {
+          ...scratchState.scratch,
+          content: heartbeatScratchNotesView(scratchState.scratch.content),
+        },
+      }
+    : scratchState;
+}
+
 /** Reads one job's private scratch state after proving the job exists in this store. */
 export async function readScratch(state: CronServiceState, id: string) {
   return await locked(state, async () => {
     await ensureLoaded(state);
-    findJobOrThrow(state, id);
+    const job = findJobOrThrow(state, id);
+    if (job.payload.kind === "heartbeat") {
+      return heartbeatNotesView(readCronJobScratchState(state.deps.storePath, id));
+    }
     // Scratch intentionally opens the process-global state DB, matching every
     // other cron store write in this service (see saveCronJobsStore); threading
     // injected state-db options through CronServiceState is a service-wide
@@ -111,16 +135,29 @@ export async function writeScratch(
 ) {
   return await locked(state, async () => {
     await ensureLoaded(state);
-    findJobOrThrow(state, id);
+    const job = findJobOrThrow(state, id);
     params.commitGuard?.();
-    return writeCronJobScratch({
+    if (job.payload.kind !== "heartbeat") {
+      return writeCronJobScratch({
+        storePath: state.deps.storePath,
+        jobId: id,
+        content: params.content,
+        expectedRevision: params.expectedRevision,
+        sourceSha256: params.sourceSha256,
+        nowMs: state.deps.nowMs(),
+      });
+    }
+    // Question edits bypass this lock, so the merged write is fenced by the revision just read.
+    const current = readCronJobScratchState(state.deps.storePath, id);
+    const result = writeCronJobScratch({
       storePath: state.deps.storePath,
       jobId: id,
-      content: params.content,
-      expectedRevision: params.expectedRevision,
+      content: replaceHeartbeatScratchNotes(current.scratch?.content, params.content),
+      expectedRevision: params.expectedRevision ?? current.currentRevision,
       sourceSha256: params.sourceSha256,
       nowMs: state.deps.nowMs(),
     });
+    return result.ok ? heartbeatNotesView(result) : result;
   });
 }
 
