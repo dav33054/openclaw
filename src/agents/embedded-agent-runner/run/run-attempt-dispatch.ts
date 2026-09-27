@@ -397,7 +397,11 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
         pluginRefresh.bindConsumer(() => attemptControls.isCurrent() && isCurrent());
       }
     },
-    pluginRuntimeRefreshMessages: params.pluginRuntimeRefreshMessages,
+    continuationMessages: params.continuationMessages ?? params.pluginRuntimeRefreshMessages,
+    // Plugin refresh can interrupt any turn after its tools have completed.
+    captureContinuationMessages: true,
+    pluginRuntimeRefreshMessages:
+      params.continuationMessages ?? params.pluginRuntimeRefreshMessages,
     permissionChange: input.permissionChange,
     admittedRunContext: params.admittedRunContext,
     startedAtMs: runInput.startedAtMs,

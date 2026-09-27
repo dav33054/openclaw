@@ -9,6 +9,7 @@ import type { ReplyPayload } from "../types.js";
 import type { BlockReplyPipeline } from "./block-reply-pipeline.js";
 import type { CurrentTurnImages } from "./current-turn-images.js";
 import type { InternalGetReplyOptions } from "./get-reply.types.js";
+import type { GroupParticipationContext } from "./group-participation-inputs.js";
 import type { FollowupRun } from "./queue.js";
 import type { DirectBlockDelivery } from "./reply-delivery.js";
 import type { ReplyMediaContext } from "./reply-media-paths.js";
@@ -19,6 +20,8 @@ export type InternalFollowupRun = FollowupRun & {
   /** Keep admission state out of the public plugin-facing FollowupRun contract. */
   currentTurnImagesPrepared?: true;
   mediaImageLayout?: CurrentTurnImages["mediaImageLayout"];
+  /** Eligibility and source facts resolved before queueing; no user configuration. */
+  groupParticipation?: GroupParticipationContext;
 };
 
 export type CompletedAgentAuthSelection = Pick<
@@ -110,6 +113,7 @@ export type AgentTurnExecutionResult = {
   runId: string;
   outcome:
     | SettledAgentTurn
+    | { kind: "observed"; compaction?: never }
     | AbortedAgentTurn
     | {
         kind: "rejected";

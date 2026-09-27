@@ -1,6 +1,8 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveAgentConfig } from "../../agents/agent-scope.js";
+import { isDecisionAssistanceEligible } from "../../agents/decision-assistance.js";
 import { resolveEmbeddedFullAccessState } from "../../agents/embedded-agent-runner/sandbox-info.js";
+import { resolveAgentIdentity } from "../../agents/identity.js";
 import {
   isSyntheticSourceReplyTurn,
   resolveReplyCompletion,
@@ -55,7 +57,10 @@ import {
   resolveBareSessionResetPromptState,
 } from "./session-reset-prompt.js";
 import { resolveSessionStableReplyMode } from "./session-stable-reply-mode.js";
-import { resolveSourceReplyExpectation } from "./source-reply-delivery-mode.js";
+import {
+  isExplicitSourceReplyCommand,
+  resolveSourceReplyExpectation,
+} from "./source-reply-delivery-mode.js";
 import { shouldApplyStartupContext, buildSessionStartupContextPrelude } from "./startup-context.js";
 import { resolveTypingMode } from "./typing-mode.js";
 import { resolveRunTypingPolicy } from "./typing-policy.js";
@@ -175,6 +180,18 @@ export async function prepareReplyRunContext(params: RunPreparedReplyParams) {
   const isGroupChat =
     promptSessionCtx.ChatType === "group" || promptSessionCtx.ChatType === "channel";
   const isDirectChat = promptSessionCtx.ChatType === "direct" || promptSessionCtx.ChatType === "dm";
+  const groupParticipation =
+    isGroupChat &&
+    !isHeartbeat &&
+    promptSessionCtx.WasMentioned !== true &&
+    !isExplicitSourceReplyCommand(promptSessionCtx, cfg) &&
+    (conversation.activation ?? defaultActivation) === "always" &&
+    isDecisionAssistanceEligible(cfg, agentId)
+      ? {
+          agentName: normalizeOptionalString(resolveAgentIdentity(cfg, agentId)?.name),
+          replyToText: sessionCtx.ReplyToBody,
+        }
+      : undefined;
   const { typingPolicy, suppressTyping } = resolveRunTypingPolicy({
     requestedPolicy: opts?.typingPolicy,
     suppressTyping: opts?.suppressTyping === true,
@@ -480,6 +497,7 @@ export async function prepareReplyRunContext(params: RunPreparedReplyParams) {
     getInboundContext: () => ({ activeGoalContext, inboundUserContext }),
     refreshInboundContextAfterAdmissionWait,
     terminalReplyExpectation,
+    groupParticipation,
   } as const;
 }
 

@@ -32,11 +32,38 @@ page for its host requirements.
 Decision models have a separate **Decision** picker in the Control UI. Selection
 chooses the provider for explicit evaluation and supported consumers. The core
 `decision_evaluate` tool follows that selection plus ordinary tool policy.
-Selection does not start background work or replace the chat model.
-Automatic experimental consumers additionally require explicit
-[Decision assistance opt-in](/concepts/experimental-features#decision-assistance).
-That Labs entry currently provides the gate foundation only, with no automatic
-consumers connected; explicit `decision_evaluate` remains independent of Labs.
+Automatic features also require the existing
+[Decision assistance opt-in](/concepts/experimental-features#decision-assistance),
+which defaults off. The primary model still writes replies and uses tools.
+
+## Group participation
+
+With Decision assistance enabled, a configured `decisionModel` helps the agent
+distinguish invitations from opportunities to contribute in groups and channels
+with mention gating disabled.
+This behavior uses embedded harnesses, including the Codex harness. Generic CLI
+backends keep their existing reply behavior.
+These rules also apply after an upgrade when Decision assistance is already
+enabled: eligible groups can stay silent instead of replying to every admitted
+message.
+
+Invited requests use the existing permissions, tools, streaming, and delivery
+policy. For an unsolicited contribution, the agent investigates privately with
+permitted read tools. It sends only a supported, useful contribution after the
+Decision Model reviews the actual draft. Clarification-only replies, empty lookup
+reports, and promises to investigate stay silent. New accepted messages require
+the agent to update its draft before another review.
+
+No additional participation setting is needed. If the Decision Model is
+unavailable, the turn resumes its ordinary behavior with the original permissions
+and delivery policy, using the work already completed. Cancellation ends the turn.
+
+Evaluations include bounded recent group history and reply references; draft
+reviews also include the proposed contribution and completed lookup results.
+Hosted providers receive this evidence and charge for evaluations under their
+normal usage terms. Attention and draft review each have a maximum 30-second
+budget, bounded further by the turn timeout. Turning assistance off stops new
+evaluations and discards pending judgments, restoring ordinary reply behavior.
 
 ## Choose a provider and model
 
