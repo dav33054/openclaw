@@ -74,6 +74,40 @@ describe("failover user copy", () => {
     expect(copy).not.toContain("add credits");
   });
 
+  it("parses a complete bounded HTTP 400 JSON body in both failover and reply copy", () => {
+    const providerMessage =
+      "This prompt is longer than the free tier allows for a single request. Shorten it, or add credits to use this model without the free-tier cap.";
+    const raw = `400 ${JSON.stringify({
+      error: { type: "invalid_request_error", message: providerMessage },
+      request_id: "req_prompt_size_canary",
+      details: "x".repeat(700),
+    })}`;
+    const expected =
+      "⚠️ The provider rejected this request because the prompt exceeds its per-request limit. Shorten the prompt and try again, or choose a model with a larger limit.";
+
+    expect(raw.length).toBeGreaterThan(512);
+    expect(raw.length).toBeLessThanOrEqual(16_384);
+    const failoverCopy = renderRateLimitOrOverloadedCopy({ reason: "rate_limit", raw });
+    const replyCopy = renderRateLimitReplyCopy({ message: raw, reason: "rate_limit" });
+    expect(failoverCopy).toBe(expected);
+    expect(replyCopy).toBe(expected);
+    expect(failoverCopy).not.toContain("req_prompt_size_canary");
+    expect(replyCopy).not.toContain("free-tier cap");
+  });
+
+  it("keeps over-limit structured provider errors on generic rate-limit copy", () => {
+    const providerMessage = "This prompt is longer than the free tier allows for a single request.";
+    const raw = `400 ${JSON.stringify({
+      error: { type: "invalid_request_error", message: providerMessage },
+      details: "x".repeat(16_384),
+    })}`;
+
+    expect(raw.length).toBeGreaterThan(16_384);
+    expect(renderRateLimitOrOverloadedCopy({ reason: "rate_limit", raw })).toBe(
+      "⚠️ API rate limit reached. Please try again later.",
+    );
+  });
+
   it.each([
     "Error: 400 max_tokens (384000) exceeds model's maximum output tokens (65536)",
     "OpenAI API error (400): max_output_tokens (384000) exceeds model's maximum output tokens (65536)",
