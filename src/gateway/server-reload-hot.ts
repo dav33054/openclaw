@@ -1,4 +1,5 @@
 import { reloadSessionMcpRuntimes } from "../agents/agent-bundle-mcp-tools.js";
+import { listAgentIds } from "../agents/agent-roster.js";
 import { tryResolveConfiguredAgentWorkspaceDir } from "../agents/agent-scope-config.js";
 import { refreshContextWindowCache } from "../agents/context.js";
 import {
@@ -26,6 +27,7 @@ import { commitHooksConfigReload, resolveHooksConfig } from "./hooks.js";
 import type { GatewayCronExitWatcherHandoff } from "./server-cron.js";
 import { applyGatewayLaneConcurrency, resolveGatewayLaneConcurrency } from "./server-lanes.js";
 import { createGatewayActiveWorkTracker } from "./server-reload-active-work.js";
+import { reviveAgentDatabasesAfterConfigCommit } from "./server-reload-agent-databases.js";
 import { restartGatewayChannels } from "./server-reload-channel-restart.js";
 import {
   assertReloadPublicationCurrent,
@@ -332,6 +334,11 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
         } catch (error) {
           failConfigCommit(error);
         }
+      }
+      if (plan.restartHeartbeat) {
+        await reviveAgentDatabasesAfterConfigCommit(listAgentIds(nextConfig), (message) =>
+          params.logReload.warn(message),
+        );
       }
       if (!ownsCron()) {
         return;

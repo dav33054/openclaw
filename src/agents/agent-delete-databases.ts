@@ -8,6 +8,7 @@ import { resolveSqliteDatabaseFilePaths } from "../infra/sqlite-files.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { assertNoOpenClawAgentDatabaseLeases } from "../state/openclaw-agent-db-lease.js";
 import { invalidateRegisteredAgentDatabasesMemo } from "../state/openclaw-agent-db-registry-listing.js";
+import { unregisterOpenClawAgentDatabase } from "../state/openclaw-agent-db-registry.js";
 import {
   closeOpenClawAgentDatabaseByPathAsync,
   inspectOpenClawAgentDatabaseOwner,
@@ -20,14 +21,42 @@ import { findOverlappingWorkspaceAgentIds } from "./agent-delete-safety.js";
 import {
   isPathOwnedByAnotherRegisteredAgent,
   normalizeAgentDirRegistryPath,
+  registerResolvedAgentDir,
+  resolveRegisteredAgentIdForDir,
+  unregisterResolvedAgentDir,
 } from "./agent-dir-registry.js";
-import { listAgentIds } from "./agent-scope.js";
+import type { AgentDeletionOperation } from "./agent-lifecycle-registry.js";
+import { listAgentIds, resolveAgentDir } from "./agent-scope.js";
+import { closeAuthProfileReadPool } from "./auth-profiles/sqlite-read-pool.js";
 
 export type AgentDeleteDatabasePlan = {
+  agentDirs: string[];
   registrationPaths: string[];
   fileGroups: string[][];
   relocatedFileGroups: string[][];
 };
+
+export function finishAgentDeleteDatabases(params: {
+  deletion: AgentDeletionOperation;
+  databasePlan: AgentDeleteDatabasePlan | undefined;
+  agentDir: string;
+  deleteFiles: boolean;
+  complete: boolean;
+}): void {
+  const { deletion, databasePlan, agentDir, deleteFiles, complete } = params;
+  deletion.assertCurrent();
+  if (!complete) {
+    return;
+  }
+  const agentId = deletion.entry.agentId;
+  unregisterResolvedAgentDir({ agentId, agentDir });
+  if (deleteFiles) {
+    for (const databasePath of databasePlan?.registrationPaths ?? []) {
+      unregisterOpenClawAgentDatabase({ agentId, path: databasePath });
+    }
+  }
+  deletion.finish();
+}
 
 /** Destructive planning includes every registered owner, regardless of runtime schema readiness. */
 export function readAgentDeleteDatabaseRegistry(options: OpenClawStateDatabaseOptions = {}) {
@@ -39,6 +68,22 @@ export function readAgentDeleteDatabaseRegistry(options: OpenClawStateDatabaseOp
 }
 
 export class AgentSharedStoreOwnerError extends Error {}
+
+export function prepareJournaledAgentDirOwnership(
+  cfg: OpenClawConfig,
+  agentId: string,
+  agentDir: string,
+): void {
+  for (const configuredAgentId of listAgentIds(cfg)) {
+    resolveAgentDir(cfg, configuredAgentId);
+  }
+  const registeredOwner = resolveRegisteredAgentIdForDir(agentDir);
+  if (registeredOwner !== undefined) {
+    return;
+  }
+  // The durable journal retains ownership across restarts after the roster entry is gone.
+  registerResolvedAgentDir({ agentId, agentDir });
+}
 
 /** Check before journaling: retaining the file alone would still fence its shared owner. */
 export function assertAgentSessionStoreDeletionSafe(
@@ -136,6 +181,7 @@ export async function prepareAgentDeleteDatabases(
   // actual cached owner so stale registration cannot close a surviving agent's handle.
   for (const databasePath of registeredDatabasePaths) {
     await closeOpenClawAgentDatabaseByPathAsync(databasePath, agentId);
+    closeAuthProfileReadPool({ kind: "database", databasePath });
   }
   // Incognito has no registry row or files, but retained statements must also be retired.
   await closeOpenClawAgentDatabaseByPathAsync(
@@ -161,6 +207,10 @@ export async function prepareAgentDeleteDatabases(
     return relative.startsWith("..") || path.isAbsolute(relative);
   });
   return {
+    agentDirs: [
+      agentDir,
+      ...Array.from(registeredDatabasePaths, (databasePath) => path.dirname(databasePath)),
+    ],
     registrationPaths: [...registeredDatabasePaths],
     fileGroups,
     relocatedFileGroups,
