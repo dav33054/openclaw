@@ -215,9 +215,13 @@ export function createUpdateDoctorDatabaseWriteCapture(
     },
     async settle() {
       const generations = await read();
-      if (generations) {
+      if (generations && expectedGenerations) {
+        // Maintenance excludes Gateway writers, not independent SQLite writers.
+        // Without transaction attribution, even Doctor-time changes are unknown.
+        unchanged &&= Object.entries(expectedGenerations).every(
+          ([pathname, generation]) => generations[pathname] === generation,
+        );
         receipt = { unchanged, generations };
-        expectedGenerations = generations;
       }
     },
   };
