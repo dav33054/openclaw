@@ -256,13 +256,8 @@ describe("Code Mode skills and read tools", () => {
     await fs.rm(tmpParent, { recursive: true, force: true });
   });
 
-  it("reads a node-hosted skill module through the locator reader", async () => {
-    const reader = vi.fn(async ({ location }: { location: string }) => {
-      if (location === "node://node-1/skills/demo/modules/during-dining.md") {
-        return "# dining module\n";
-      }
-      return "# skill\n";
-    });
+  it("rejects companion reads for node-hosted skills without calling the node reader", async () => {
+    const reader = vi.fn(async () => "# dining module\n");
     const skill: CodeModeSkill = {
       name: "demo",
       description: "demo",
@@ -273,26 +268,18 @@ describe("Code Mode skills and read tools", () => {
       },
       reader,
     };
-    await expect(readCodeModeSkill(skill, undefined, "modules/during-dining.md")).resolves.toBe(
-      "# dining module\n",
-    );
-    expect(reader).toHaveBeenCalledWith({
-      location: "node://node-1/skills/demo/modules/during-dining.md",
-      signal: undefined,
-    });
-    for (const encodedEscape of [
+    await expect(readCodeModeSkill(skill)).resolves.toBe("# skill\n");
+    for (const relativePath of [
+      "modules/during-dining.md",
       "%2e%2e/other/SKILL.md",
       "%252e%252e/other/SKILL.md",
       "modules%2f..%2fsecret.md",
     ]) {
-      await expect(readCodeModeSkill(skill, undefined, encodedEscape)).rejects.toThrow(
-        /invalid skill relative path/,
+      await expect(readCodeModeSkill(skill, undefined, relativePath)).rejects.toThrow(
+        /node-hosted skill companion reads are unavailable/,
       );
     }
-    expect(reader).toHaveBeenCalledOnce();
-    await expect(
-      readCodeModeSkill({ ...skill, reader: undefined }, undefined, "modules/x.md"),
-    ).rejects.toThrow(/node-hosted skill relative reads require a node skill reader/);
+    expect(reader).not.toHaveBeenCalled();
   });
 
   it("reads a sandbox companion from the materialized host root, not the container locator", async () => {
@@ -371,18 +358,7 @@ describe("Code Mode skills and read tools", () => {
     expect(codeModeTools[0]?.description).toContain("not available for the selected skills");
   });
 
-  it.each([
-    {
-      name: "missing workspace companion reader",
-      companionReader: undefined,
-      advertised: false,
-    },
-    {
-      name: "available workspace companion reader",
-      companionReader: vi.fn(async () => "companion"),
-      advertised: true,
-    },
-  ])("gates workspace companion guidance on $name", ({ companionReader, advertised }) => {
+  it("does not advertise or serve companion reads for workspace-hosted skills", async () => {
     const codeModeSkills: CodeModeSkill[] = [
       {
         name: "demo",
@@ -393,7 +369,6 @@ describe("Code Mode skills and read tools", () => {
           fileHost: "workspace",
           readContent: "# skill\n",
         },
-        companionReader,
       },
     ];
     const { config, catalogRef, tools: codeModeTools } = createCodeModeHarness({ codeModeSkills });
@@ -407,8 +382,13 @@ describe("Code Mode skills and read tools", () => {
       codeModeSkills,
     });
     const description = codeModeTools[0]?.description ?? "";
-    expect(description.includes("skills.read(name,")).toBe(advertised);
-    expect(description.includes("whose provider supports companion reads")).toBe(advertised);
+    expect(description).toContain("`await skills.read(name)`");
+    expect(description).not.toContain("skills.read(name,");
+    expect(description).toContain("not available for the selected skills");
+    await expect(
+      readCodeModeSkill(codeModeSkills[0]!, undefined, "modules/foo.md"),
+    ).rejects.toThrow(/workspace skill companion reads are unavailable/);
+    await expect(readCodeModeSkill(codeModeSkills[0]!)).resolves.toBe("# skill\n");
   });
 
   it.runIf(process.platform !== "win32")(
@@ -448,23 +428,6 @@ describe("Code Mode skills and read tools", () => {
     await expect(readCodeModeSkill(skill, undefined, "huge.md")).rejects.toThrow(
       'skill relative file exceeds 256000 bytes: "huge.md"',
     );
-    const reader = vi.fn(async () => "y".repeat(256_001));
-    await expect(
-      readCodeModeSkill(
-        {
-          name: "demo",
-          description: "demo",
-          location: "node://node-1/skills/demo/SKILL.md",
-          source: {
-            filePath: "node://node-1/skills/demo/SKILL.md",
-            readContent: "# skill\n",
-          },
-          reader,
-        },
-        undefined,
-        "modules/huge.md",
-      ),
-    ).rejects.toThrow(/exceeds 256000 bytes/);
     await fs.rm(tmpParent, { recursive: true, force: true });
   });
 

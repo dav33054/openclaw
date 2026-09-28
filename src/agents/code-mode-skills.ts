@@ -6,12 +6,9 @@ import {
   type FsSafeErrorCode,
   type Root,
 } from "../infra/fs-safe.js";
-import {
-  decodeSkillXml,
-  type Skill,
-  type SkillSourceRootIdentity,
-} from "../skills/loading/skill-contract.js";
-import { SKILL_COMPANION_MAX_BYTES } from "../skills/runtime/skill-companion.js";
+import { decodeSkillXml, type Skill } from "../skills/loading/skill-contract.js";
+
+const SKILL_COMPANION_MAX_BYTES = 256_000;
 
 type PinnedSkillRoot = Promise<{ ok: true; root: Root } | { ok: false; error: unknown }>;
 
@@ -19,22 +16,14 @@ export type CodeModeSkill = {
   name: string;
   description: string;
   location: string;
-  source: Pick<Skill, "filePath" | "fileHost" | "readContent" | "sourceRootIdentity"> & {
+  source: Pick<Skill, "filePath" | "fileHost" | "readContent"> & {
     pinnedRoot?: PinnedSkillRoot;
   };
   reader?: CodeModeSkillReader;
-  companionReader?: CodeModeSkillCompanionReader;
 };
 
 export type CodeModeSkillReader = (params: {
   location: string;
-  signal?: AbortSignal;
-}) => Promise<string>;
-
-export type CodeModeSkillCompanionReader = (params: {
-  skillFilePath: string;
-  relativePath: string;
-  sourceRootIdentity: SkillSourceRootIdentity;
   signal?: AbortSignal;
 }) => Promise<string>;
 
@@ -72,49 +61,6 @@ function normalizeSkillRelativePath(relativePath: string): string {
     throw new Error(`invalid skill relative path ${JSON.stringify(relativePath)}`);
   }
   return trimmed;
-}
-
-function normalizeNodeSkillRelativePath(relativePath: string): string {
-  const trimmed = normalizeSkillRelativePath(relativePath);
-  let decoded = trimmed;
-  for (let pass = 0; pass < 4; pass += 1) {
-    let next: string;
-    try {
-      next = decodeURIComponent(decoded);
-    } catch {
-      throw new Error(`invalid skill relative path ${JSON.stringify(relativePath)}`);
-    }
-    if (next === decoded) {
-      break;
-    }
-    decoded = next;
-    if (pass === 3) {
-      throw new Error(`invalid skill relative path ${JSON.stringify(relativePath)}`);
-    }
-  }
-  const decodedPath = decoded.replaceAll("\\", "/");
-  const parsed = new URL(trimmed, "https://skill.invalid/root/");
-  if (
-    path.posix.isAbsolute(decodedPath) ||
-    path.win32.isAbsolute(decodedPath) ||
-    decodedPath.split("/").some((segment) => !segment || segment === "." || segment === "..") ||
-    !parsed.pathname.startsWith("/root/") ||
-    parsed.search ||
-    parsed.hash
-  ) {
-    throw new Error(`invalid skill relative path ${JSON.stringify(relativePath)}`);
-  }
-  return trimmed;
-}
-
-function resolveNodeSkillRelativeLocator(skillFileLocator: string, relativePath: string): string {
-  const trimmed = normalizeNodeSkillRelativePath(relativePath);
-  const normalized = skillFileLocator.replaceAll("\\", "/");
-  const root = normalized.replace(/\/SKILL\.md$/i, "");
-  if (!isNodeHostedSkillLocator(root)) {
-    throw new Error(`invalid skill relative path ${JSON.stringify(relativePath)}`);
-  }
-  return `${root}/${trimmed}`;
 }
 
 function skillRelativeEscapeError(relativePath: string, cause: unknown): Error {
@@ -168,24 +114,12 @@ export function resolveCodeModeSkills(params: {
         filePath: sourceFilePath,
         fileHost: source.fileHost,
         readContent: source.readContent,
-        sourceRootIdentity: source.sourceRootIdentity,
         pinnedRoot: pinFilesystemSkillRoot(sourceFilePath),
       },
       reader: params.reader,
     });
   }
   return result;
-}
-
-// Same host-side bound as skill-root discovery. Companion reads must fail
-// before materializing a larger file; Code Mode truncation is not a cap.
-function assertSkillFileWithinBound(text: string, relativePath: string): string {
-  if (Buffer.byteLength(text, "utf8") > SKILL_COMPANION_MAX_BYTES) {
-    throw new Error(
-      `skill relative file exceeds ${SKILL_COMPANION_MAX_BYTES} bytes: ${JSON.stringify(relativePath)}`,
-    );
-  }
-  return text;
 }
 
 async function readFilesystemSkillRelative(
@@ -249,34 +183,9 @@ export async function readCodeModeSkill(
   }
 
   const locator = isNodeHostedSkillLocator(skill.location) ? skill.location : skill.source.filePath;
-  if (isNodeHostedSkillLocator(locator)) {
-    const nodeTarget = resolveNodeSkillRelativeLocator(locator, relative);
-    if (!skill.reader) {
-      throw new Error(
-        `node-hosted skill relative reads require a node skill reader: ${JSON.stringify(relative)}`,
-      );
-    }
-    return assertSkillFileWithinBound(
-      await skill.reader({ location: nodeTarget, signal }),
-      relative,
-    );
-  }
-
-  if (skill.companionReader) {
-    const relativeTarget = normalizeSkillRelativePath(relative);
-    if (!skill.source.sourceRootIdentity) {
-      throw new Error(
-        `workspace skill root identity is unavailable: ${JSON.stringify(skill.source.filePath)}`,
-      );
-    }
-    return assertSkillFileWithinBound(
-      await skill.companionReader({
-        skillFilePath: skill.source.filePath,
-        relativePath: relativeTarget,
-        sourceRootIdentity: skill.source.sourceRootIdentity,
-        signal,
-      }),
-      relative,
+  if (isNodeHostedSkillLocator(locator) || isNodeHostedSkillLocator(skill.source.filePath)) {
+    throw new Error(
+      `node-hosted skill companion reads are unavailable: ${JSON.stringify(relative)}`,
     );
   }
 
@@ -286,10 +195,5 @@ export async function readCodeModeSkill(
 
   // Companion files stay on the selected skill root. The sandbox reader is
   // collection-scoped and would follow a symlink into a sibling skill.
-  if (isNodeHostedSkillLocator(skill.source.filePath)) {
-    throw new Error(
-      `node-hosted skill relative reads require a node skill reader: ${JSON.stringify(relative)}`,
-    );
-  }
   return await readFilesystemSkillRelative(skill.source.pinnedRoot, relative, signal);
 }

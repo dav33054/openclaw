@@ -449,6 +449,7 @@ export async function runBridgeRequest(params: {
             message.includes("escapes skill root") ||
             message.includes("skill relative file exceeds") ||
             message.includes("node-hosted skill") ||
+            message.includes("workspace skill companion") ||
             message.includes("node skill reader")
           ) {
             throw new ToolInputError(message);
