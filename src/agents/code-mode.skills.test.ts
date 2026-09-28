@@ -151,6 +151,7 @@ describe("Code Mode skills and read tools", () => {
           },
         ],
         hasMore: false,
+        coverage: { bodyIndexed: 0, metadataOnly: 1, truncatedBodies: 0 },
       },
       unknown: 'Unknown installed skill "missing".',
     });
