@@ -34,6 +34,7 @@ export function resolveFeishuGroupSession(params: {
   messageId: string;
   rootId?: string;
   threadId?: string;
+  topicRootMessageId?: string;
   chatType?: FeishuChatType;
   groupConfig?: {
     groupSessionScope?: GroupSessionScope;
@@ -46,10 +47,20 @@ export function resolveFeishuGroupSession(params: {
     replyInThread?: "enabled" | "disabled";
   };
 }): ResolvedFeishuGroupSession {
-  const { chatId, senderOpenId, messageId, rootId, threadId, chatType, groupConfig, feishuCfg } =
-    params;
+  const {
+    chatId,
+    senderOpenId,
+    messageId,
+    rootId,
+    threadId,
+    topicRootMessageId,
+    chatType,
+    groupConfig,
+    feishuCfg,
+  } = params;
   const normalizedThreadId = threadId?.trim();
   const normalizedRootId = rootId?.trim();
+  const normalizedTopicRootMessageId = topicRootMessageId?.trim();
   const threadReply = Boolean(normalizedThreadId || normalizedRootId);
   const replyInThread =
     (groupConfig?.replyInThread ?? feishuCfg?.replyInThread ?? "disabled") === "enabled" ||
@@ -57,9 +68,14 @@ export function resolveFeishuGroupSession(params: {
   const groupSessionScope = resolveConfiguredFeishuGroupSessionScope({ groupConfig, feishuCfg });
   const normalizedTopicGroupThreadId =
     chatType === "topic_group" ? (normalizedThreadId ?? normalizedRootId) : undefined;
+  // A topic's messages must share one session even though providers report different ids for
+  // them: thread_id identifies the topic, while a quote reply's root_id points at the quoted
+  // message. The resolved topic root wins so both shapes land on the same key, which also stays
+  // usable as a reply anchor because Feishu replies address a message, not a topic.
   const topicScope =
     groupSessionScope === "group_topic" || groupSessionScope === "group_topic_sender"
-      ? (normalizedTopicGroupThreadId ??
+      ? (normalizedTopicRootMessageId ??
+        normalizedTopicGroupThreadId ??
         normalizedRootId ??
         normalizedThreadId ??
         (replyInThread ? messageId : null))

@@ -530,7 +530,17 @@ function resolveFeishuTopicAutoThreadAnchor(
     return undefined;
   }
   const inbound = ctx.toolContext?.currentMessageId;
-  return typeof inbound === "string" && inbound.length > 0 ? inbound : undefined;
+  if (typeof inbound === "string" && inbound.length > 0) {
+    return inbound;
+  }
+  // Turns the agent starts on its own (heartbeat, scheduled work, tool sends) have no inbound
+  // message, but a topic session's key still names the topic's root message. Reusing it keeps
+  // the reply inside its topic instead of starting a new top-level topic. A bare topic id
+  // (`omt_…`) cannot address a Feishu reply, so only message ids are reused.
+  const sessionTopicId = parseFeishuConversationId({
+    conversationId: ctx.sessionKey ?? "",
+  })?.topicId?.trim();
+  return sessionTopicId?.startsWith("om_") ? sessionTopicId : undefined;
 }
 
 function buildFeishuSendReplyAnchor(
@@ -1738,6 +1748,9 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
         normalizeTarget: (raw) => normalizeFeishuTarget(raw) ?? undefined,
         inferTargetChatType: ({ to }) =>
           resolveReceiveIdType(to) === "chat_id" ? "group" : "direct",
+        // A heartbeat for a group session must reply into the session's topic instead of
+        // starting a new top-level topic, so core may reuse the recorded route thread id.
+        preserveHeartbeatThreadIdForGroupRoute: true,
         resolveDeliveryTarget: ({ conversationId, parentConversationId }) => {
           const directId = parseFeishuDirectConversationId(conversationId);
           if (directId) {

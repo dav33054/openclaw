@@ -222,6 +222,7 @@ const {
   mockSendMessageFeishu,
   mockGetMessageFeishu,
   mockListFeishuThreadMessages,
+  mockResolveFeishuTopicRootMessageId,
   mockDownloadMessageResourceFeishu,
   mockCreateFeishuClient,
   mockResolveAgentRoute,
@@ -248,6 +249,7 @@ const {
   mockSendMessageFeishu: vi.fn().mockResolvedValue({ messageId: "pairing-msg", chatId: "oc-dm" }),
   mockGetMessageFeishu: vi.fn().mockResolvedValue(null),
   mockListFeishuThreadMessages: vi.fn().mockResolvedValue([]),
+  mockResolveFeishuTopicRootMessageId: vi.fn().mockResolvedValue(undefined),
   mockDownloadMessageResourceFeishu: vi.fn().mockResolvedValue({
     saved: {
       id: "inbound-clip.mp4",
@@ -339,6 +341,7 @@ vi.mock("./send.js", () => ({
   sendMessageFeishu: mockSendMessageFeishu,
   getMessageFeishu: mockGetMessageFeishu,
   listFeishuThreadMessages: mockListFeishuThreadMessages,
+  resolveFeishuTopicRootMessageId: mockResolveFeishuTopicRootMessageId,
 }));
 
 vi.mock("./media.js", () => ({
@@ -903,6 +906,7 @@ describe("handleFeishuMessage command authorization", () => {
     mockShouldComputeCommandAuthorized.mockReset().mockReturnValue(true);
     mockGetMessageFeishu.mockReset().mockResolvedValue(null);
     mockListFeishuThreadMessages.mockReset().mockResolvedValue([]);
+    mockResolveFeishuTopicRootMessageId.mockReset().mockResolvedValue(undefined);
     mockReadSessionUpdatedAt.mockReturnValue(undefined);
     mockResolveStorePath.mockReturnValue("/tmp/feishu-sessions.json");
     mockResolveConfiguredBindingRoute

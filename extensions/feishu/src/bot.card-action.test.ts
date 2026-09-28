@@ -35,6 +35,7 @@ vi.mock("./client.js", () => ({
 vi.mock("./send.js", () => ({
   sendCardFeishu: sendCardFeishuMock,
   sendMessageFeishu: sendMessageFeishuMock,
+  resolveFeishuTopicRootMessageId: vi.fn().mockResolvedValue(undefined),
 }));
 
 import { handleFeishuMessage } from "./bot.js";

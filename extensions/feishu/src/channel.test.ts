@@ -337,6 +337,12 @@ describe("feishuPlugin messaging", () => {
       parentConversationCandidates: ["oc_group_chat:topic:om_topic_root", "oc_group_chat"],
     });
   });
+
+  it("lets core reuse a group session's route thread id for heartbeats", () => {
+    // Without this opt-in, a heartbeat that targets the session's last route posts a new
+    // top-level message, which starts a new topic in a Feishu topic chat.
+    expect(feishuPlugin.messaging?.preserveHeartbeatThreadIdForGroupRoute).toBe(true);
+  });
 });
 
 describe("feishuPlugin actions", () => {
@@ -832,6 +838,58 @@ describe("feishuPlugin actions", () => {
       });
     },
   );
+
+  it("anchors an agent-initiated send to the session topic when the turn has no inbound message", async () => {
+    const stickerCfg = {
+      channels: {
+        feishu: {
+          accounts: {
+            work: { appId: "cli_work", appSecret: "secret_work", actions: { sticker: true } },
+          },
+        },
+      },
+    } satisfies OpenClawConfig;
+    sendStickerFeishuMock.mockResolvedValueOnce({ messageId: "om_sticker", chatId: "oc_group_1" });
+    await feishuPlugin.actions!.handleAction!({
+      channel: "feishu",
+      action: "sticker",
+      params: { fileId: "file_sticker" },
+      cfg: stickerCfg,
+      accountId: "work",
+      // No inbound message id: heartbeats and scheduled turns look exactly like this.
+      sessionKey: "feishu:group:oc_group_1:topic:om_topic_root",
+      toolContext: { currentChannelId: "oc_group_1" },
+    });
+    expect(sendStickerFeishuMock).toHaveBeenCalledWith(
+      expect.objectContaining({ replyToMessageId: "om_topic_root", replyInThread: true }),
+    );
+  });
+
+  it("never addresses a bare topic id as a reply target", async () => {
+    const stickerCfg = {
+      channels: {
+        feishu: {
+          accounts: {
+            work: { appId: "cli_work", appSecret: "secret_work", actions: { sticker: true } },
+          },
+        },
+      },
+    } satisfies OpenClawConfig;
+    sendStickerFeishuMock.mockResolvedValueOnce({ messageId: "om_sticker", chatId: "oc_group_1" });
+    await feishuPlugin.actions!.handleAction!({
+      channel: "feishu",
+      action: "sticker",
+      params: { fileId: "file_sticker" },
+      cfg: stickerCfg,
+      accountId: "work",
+      sessionKey: "feishu:group:oc_group_1:topic:omt_topic_root",
+      toolContext: { currentChannelId: "oc_group_1" },
+    });
+    // `omt_` identifies a topic; only a message id can address a Feishu reply.
+    expect(sendStickerFeishuMock).toHaveBeenCalledWith(
+      expect.objectContaining({ replyToMessageId: undefined, replyInThread: false }),
+    );
+  });
 
   it.each([{}, { fileId: "../bad" }, { stickerId: [] }])(
     "rejects a missing or invalid sticker key before dispatch: %j",

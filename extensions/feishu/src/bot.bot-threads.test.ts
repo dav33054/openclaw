@@ -13,7 +13,12 @@ import {
 } from "./bot.test-support.js";
 import { setFeishuRuntime } from "./runtime.js";
 
-const { mockGetMessageFeishu, mockDispatchReply, mockResolveAgentRoute } = vi.hoisted(() => ({
+const {
+  mockGetMessageFeishu,
+  mockDispatchReply,
+  mockResolveAgentRoute,
+  mockResolveFeishuTopicRootMessageId,
+} = vi.hoisted(() => ({
   mockGetMessageFeishu: vi.fn<typeof import("./send.js").getMessageFeishu>(),
   mockDispatchReply: vi
     .fn<PluginRuntime["channel"]["reply"]["dispatchReplyWithBufferedBlockDispatcher"]>()
@@ -21,11 +26,15 @@ const { mockGetMessageFeishu, mockDispatchReply, mockResolveAgentRoute } = vi.ho
   mockResolveAgentRoute: vi.fn<PluginRuntime["channel"]["routing"]["resolveAgentRoute"]>(() =>
     createFeishuTestRoute(),
   ),
+  mockResolveFeishuTopicRootMessageId: vi.fn<
+    typeof import("./send.js").resolveFeishuTopicRootMessageId
+  >(async () => undefined),
 }));
 
 vi.mock("./send.js", () => ({
   getMessageFeishu: mockGetMessageFeishu,
   listFeishuThreadMessages: vi.fn().mockResolvedValue([]),
+  resolveFeishuTopicRootMessageId: mockResolveFeishuTopicRootMessageId,
   sendMessageFeishu: vi.fn(),
 }));
 vi.mock("./reply-dispatcher.js", () => ({
@@ -298,4 +307,93 @@ describe("Feishu bot-owned thread mentions", () => {
       }
     },
   );
+});
+
+describe("Feishu topic session keys", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetMessageFeishu.mockReset().mockResolvedValue(null);
+    mockResolveFeishuTopicRootMessageId.mockReset().mockResolvedValue(undefined);
+    setFeishuRuntime(
+      createPluginRuntimeMock({
+        config: { current: () => currentRuntimeConfig },
+        channel: {
+          inbound: { buildContext: buildChannelInboundEventContext },
+          reply: { dispatchReplyWithBufferedBlockDispatcher: mockDispatchReply },
+          routing: { resolveAgentRoute: mockResolveAgentRoute },
+        },
+      }),
+    );
+  });
+
+  const topicCfg = () =>
+    createFeishuTestConfig({
+      appId: "cli_test",
+      appSecret: "test-secret",
+      groupPolicy: "open",
+      requireMention: false,
+      groups: {
+        "oc-group": { groupSessionScope: "group_topic", replyInThread: "enabled" },
+      },
+    });
+
+  const routedPeerIds = () =>
+    mockResolveAgentRoute.mock.calls.map(([params]) => {
+      const peer = (params as unknown as { peer?: { id?: string } } | undefined)?.peer;
+      return peer?.id;
+    });
+
+  it("keys a quoted topic reply to the same session as the topic starter", async () => {
+    // Feishu reports thread_id on every message of a topic, and a quote reply's root_id points
+    // at the quoted message, so only the topic's root message can key the session.
+    mockResolveFeishuTopicRootMessageId.mockResolvedValue("om_topic_starter_message");
+    const cfg = topicCfg();
+
+    await dispatchMessage({
+      cfg,
+      event: createFeishuTestEvent({
+        messageId: "om_topic_starter_message",
+        senderOpenId: "ou-topic-user",
+        chatId: "oc-group",
+        chatType: "group",
+        text: "topic starter",
+        message: { thread_id: "omt_topic_quote" },
+      }),
+    });
+    await dispatchMessage({
+      cfg,
+      event: createFeishuTestEvent({
+        messageId: "om_topic_quoted_reply",
+        senderOpenId: "ou-topic-user",
+        chatId: "oc-group",
+        chatType: "group",
+        text: "quote reply inside the same topic",
+        message: { root_id: "om_mid_topic_message", thread_id: "omt_topic_quote" },
+      }),
+    });
+
+    expect(routedPeerIds()).toEqual([
+      "oc-group:topic:om_topic_starter_message",
+      "oc-group:topic:om_topic_starter_message",
+    ]);
+    expect(mockResolveFeishuTopicRootMessageId).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the provider topic key when the topic root cannot be resolved", async () => {
+    mockResolveFeishuTopicRootMessageId.mockResolvedValue(undefined);
+
+    await dispatchMessage({
+      cfg: topicCfg(),
+      event: createFeishuTestEvent({
+        messageId: "om_fallback_topic_starter",
+        senderOpenId: "ou-topic-user",
+        chatId: "oc-group",
+        chatType: "group",
+        text: "topic starter",
+        message: { thread_id: "omt_topic_fallback" },
+      }),
+    });
+
+    expect(routedPeerIds()).toEqual(["oc-group:topic:omt_topic_fallback"]);
+  });
 });
