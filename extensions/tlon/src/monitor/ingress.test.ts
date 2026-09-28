@@ -59,14 +59,15 @@ function channelReplyEvent(params?: { id?: string; nest?: string; text?: string 
   };
 }
 
-function chatEvent(params?: { id?: string; peer?: string; text?: string }) {
+function chatEvent(params?: { id?: string; peer?: string; author?: string; text?: string }) {
+  const peer = params?.peer ?? "~nec";
   return {
-    whom: params?.peer ?? "~nec",
+    whom: peer,
     id: params?.id ?? "dm-1",
     response: {
       add: {
         essay: {
-          author: params?.peer ?? "~nec",
+          author: params?.author ?? peer,
           content: [{ text: params?.text ?? "hello" }],
           sent: 1_700_000_000_000,
         },
@@ -165,6 +166,30 @@ describe("Tlon durable ingress", () => {
         expect(recoveredDispatch).toHaveBeenCalledTimes(1);
       } finally {
         await recovered.stop();
+      }
+    });
+  });
+
+  it("rejects club events before an untrusted author reaches durable ingress", async () => {
+    await withQueue(async (queue) => {
+      const dispatch = vi.fn();
+      const monitor = startMonitor(queue, dispatch);
+      try {
+        await expect(
+          monitor.receive({
+            source: "chat",
+            event: chatEvent({
+              id: "club-forged-owner",
+              peer: "0v3.q4n5m.6r7s8.9t0u1.2v3w4",
+              author: "~nec",
+            }),
+          }),
+        ).resolves.toEqual({ kind: "ignored" });
+        await monitor.waitForIdle();
+        expect(dispatch).not.toHaveBeenCalled();
+        expect(await queue.listClaims()).toEqual([]);
+      } finally {
+        await monitor.stop();
       }
     });
   });

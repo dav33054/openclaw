@@ -12,6 +12,7 @@ import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { normalizeNullableString as nonEmptyString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { getTlonRuntime } from "../runtime.js";
 import { UrbitAuthError, UrbitHttpError } from "../urbit/errors.js";
+import { extractAuthenticatedDmPartnerShip } from "./identity.js";
 
 const TLON_INGRESS_PAYLOAD_VERSION = 1;
 const TLON_INGRESS_POLL_INTERVAL_MS = 1_000;
@@ -70,9 +71,8 @@ function inspectChatEvent(event: unknown): { eventId: string; laneKey: string } 
   if (!essay || !eventId) {
     return null;
   }
-  const whom = isRecord(envelope?.whom) ? nonEmptyString(envelope.whom.ship) : null;
-  const peer = nonEmptyString(envelope?.whom) ?? whom ?? nonEmptyString(essay.author);
-  return { eventId, laneKey: peer ? `direct:${peer}` : `event:${eventId}` };
+  const peer = extractAuthenticatedDmPartnerShip(envelope?.whom);
+  return peer ? { eventId, laneKey: `direct:${peer}` } : null;
 }
 
 function inspectTlonIngressEvent(

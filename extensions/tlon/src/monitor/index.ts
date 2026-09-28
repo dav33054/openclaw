@@ -44,6 +44,7 @@ import { resolveChannelAuthorization } from "./authorization.js";
 import { createTlonCitationResolver } from "./cites.js";
 import { fetchAllChannels, fetchInitData } from "./discovery.js";
 import { createChannelHistoryCache, fetchThreadHistory } from "./history.js";
+import { extractAuthenticatedDmPartnerShip } from "./identity.js";
 import { createTlonIngressMonitor, type TlonIngressLifecycle } from "./ingress.js";
 import { buildTlonInboundMediaPrompt, downloadMessageImages } from "./media.js";
 import { prepareTlonGroupAdmission } from "./mentions.js";
@@ -55,7 +56,6 @@ import {
 } from "./settings-helpers.js";
 import { createActiveSnapshotTracker, createParticipatedThreadTracker } from "./tracking.js";
 import {
-  extractDmPartnerShip,
   extractMessageText,
   formatModelName,
   formatSummarizationHistoryText,
@@ -946,20 +946,23 @@ export async function monitorTlonProvider(opts: MonitorTlonOpts = {}): Promise<v
       }
 
       const authorShip = normalizeShip(readString(essay, "author") ?? "");
-      const partnerShip = extractDmPartnerShip(whom);
-      const senderShip = partnerShip || authorShip;
+      const senderShip = extractAuthenticatedDmPartnerShip(whom);
+
+      // Club events expose only essay.author, which is not bound to the authenticated
+      // Urbit sender. Ignore them rather than promoting an untrusted owner identity.
+      if (!senderShip) {
+        runtime.log?.("[tlon] Ignoring chat event without an authenticated DM partner");
+        return;
+      }
 
       // Ignore the bot's own outbound DM events.
-      if (authorShip === botShipName) {
-        return;
-      }
-      if (!senderShip || senderShip === botShipName) {
+      if (authorShip === botShipName || senderShip === botShipName) {
         return;
       }
 
-      if (authorShip && partnerShip && authorShip !== partnerShip) {
+      if (authorShip && authorShip !== senderShip) {
         runtime.log?.(
-          `[tlon] DM ship mismatch (author=${authorShip}, partner=${partnerShip}) - routing to partner`,
+          `[tlon] DM ship mismatch (author=${authorShip}, partner=${senderShip}) - routing to partner`,
         );
       }
 
