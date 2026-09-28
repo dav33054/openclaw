@@ -30,6 +30,7 @@ import { withOpenClawAgentDatabaseWrite } from "../../state/openclaw-agent-db-wr
 import { resolveSessionAgentId } from "../agent-scope.js";
 import { isHeartbeatLifecycleRunKind } from "../bootstrap-mode.js";
 import type { CliOutput, CliUsage } from "../cli-output-contracts.js";
+import { resolveCliTranscriptUsage, type CliTranscriptUsage } from "../cli-transcript-usage.js";
 import {
   awaitAgentEndSideEffects,
   runAgentEndSideEffects,
@@ -127,54 +128,6 @@ export async function persistApprovedCliUserTurnTranscript(
     }
   }
   return persisted !== undefined || recorder.hasPersisted() || recorder.isBlocked();
-}
-
-type CliTranscriptUsage = {
-  input?: number;
-  output?: number;
-  cacheRead?: number;
-  cacheWrite?: number;
-  total?: number;
-  contextUsage?: NonNullable<Usage["contextUsage"]>;
-};
-
-const CLI_TRANSCRIPT_UNAVAILABLE_USAGE = {
-  input: 0,
-  output: 0,
-  cacheRead: 0,
-  cacheWrite: 0,
-  total: 0,
-  contextUsage: { state: "unavailable" },
-} as const;
-
-/**
- * Transcript counters account for the whole turn; `contextUsage` stays the latest call's
- * prompt size so context readers never size the window from a multi-call aggregate.
- */
-function resolveCliTranscriptUsage(
-  lastCallUsage: CliTranscriptUsage | undefined,
-  turnUsage: CliTranscriptUsage | undefined,
-): CliTranscriptUsage {
-  if (!lastCallUsage) {
-    return CLI_TRANSCRIPT_UNAVAILABLE_USAGE;
-  }
-  const counters = turnUsage ?? lastCallUsage;
-  if (lastCallUsage.contextUsage) {
-    return { ...counters, contextUsage: lastCallUsage.contextUsage };
-  }
-  const promptTokens =
-    (lastCallUsage.input ?? 0) + (lastCallUsage.cacheRead ?? 0) + (lastCallUsage.cacheWrite ?? 0);
-  return {
-    ...counters,
-    contextUsage:
-      promptTokens > 0
-        ? {
-            state: "available",
-            promptTokens,
-            totalTokens: promptTokens + (lastCallUsage.output ?? 0),
-          }
-        : { state: "unavailable" },
-  };
 }
 
 /**
