@@ -9,7 +9,7 @@ export type CliTranscriptUsage = {
   contextUsage?: ContextUsage;
 };
 
-export const CLI_TRANSCRIPT_UNAVAILABLE_USAGE = {
+const CLI_TRANSCRIPT_UNAVAILABLE_USAGE = {
   input: 0,
   output: 0,
   cacheRead: 0,

@@ -29,12 +29,7 @@ import {
 } from "../../agents/session-runtime-compat.js";
 import type { CompactionRequestBudget } from "../../agents/sessions/compaction/request-budget.js";
 import { resolveEffectiveAgentRuntime } from "../../agents/thinking-runtime.js";
-import {
-  deriveContextPromptTokens,
-  hasNonzeroUsage,
-  normalizeUsage,
-  type UsageLike,
-} from "../../agents/usage.js";
+import { hasNonzeroUsage, normalizeUsage, type UsageLike } from "../../agents/usage.js";
 import {
   resolveAgentIdFromSessionKey,
   resolveFreshSessionTotalTokens,
@@ -97,7 +92,10 @@ import { startFollowupRunPreAdoptionHeartbeat } from "./queue/lifecycle.js";
 import { resolveFollowupAbortSignal } from "./queue/types.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
 import { incrementCompactionCount } from "./session-updates.js";
-import { deriveTranscriptOutputTokens } from "./transcript-output-usage.js";
+import {
+  deriveTranscriptUsageSnapshot,
+  type SessionTranscriptUsageSnapshot,
+} from "./transcript-output-usage.js";
 
 const MAX_FLUSH_FAILURES = 3;
 const preflightCompactionLog = createSubsystemLogger("auto-reply/preflight-compaction");
@@ -260,12 +258,6 @@ function resolveFollowupContextTokens(
   });
 }
 
-type SessionTranscriptUsageSnapshot = {
-  promptTokens?: number;
-  outputTokens?: number;
-  trailingMessages: AgentMessage[];
-};
-
 function hasUsableProviderPromptUsage(
   usage: SessionTranscriptUsageSnapshot | undefined,
 ): usage is SessionTranscriptUsageSnapshot & { promptTokens: number } {
@@ -291,22 +283,6 @@ function isUnavailableContextBarrier(
 // transcript reads in time to flip memory-flush gating when needed.
 const TRANSCRIPT_OUTPUT_READ_BUFFER_TOKENS = 8192;
 const SQLITE_USAGE_TAIL_MAX_EVENTS = 512;
-
-function deriveTranscriptUsageSnapshot(
-  usage: NonNullable<ReturnType<typeof normalizeUsage>>,
-  trailingMessages: AgentMessage[],
-): SessionTranscriptUsageSnapshot | undefined {
-  const promptTokens = deriveContextPromptTokens({ lastCallUsage: usage });
-  const outputTokens = deriveTranscriptOutputTokens(usage);
-  if (!(typeof promptTokens === "number") && !(typeof outputTokens === "number")) {
-    return undefined;
-  }
-  return {
-    promptTokens,
-    outputTokens,
-    trailingMessages,
-  };
-}
 
 function readTranscriptAccountingSnapshot(
   visit: (visitor: (event: unknown) => void) => void,
