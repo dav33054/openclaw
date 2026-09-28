@@ -275,6 +275,31 @@ describe("Code Mode skills and read tools", () => {
       expect(value.missing).toMatch(/^skill relative file not-found: "missing.md"/);
       expect(value.missing).not.toMatch(/escapes skill root/);
       expect(value.escaped).toBe('invalid skill relative path "../secret.md"');
+
+      if (process.platform !== "win32") {
+        const replacementRoot = nodePath.join(tmpParent, "replacement");
+        const selectedRoot = nodePath.join(tmpParent, "selected-demo");
+        await fs.mkdir(nodePath.join(replacementRoot, "modules"), { recursive: true });
+        await fs.writeFile(
+          nodePath.join(replacementRoot, "modules", "during-dining.md"),
+          "REPLACED_BYTES",
+          "utf8",
+        );
+        await fs.rename(skillRoot, selectedRoot);
+        await fs.symlink(replacementRoot, skillRoot, "dir");
+        const replaced = await runUntilCompleted({
+          execTool: expectDefined(codeModeTools[0], "codeModeTools[0] test invariant"),
+          waitTool: expectDefined(codeModeTools[1], "codeModeTools[1] test invariant"),
+          code: `
+            try { return { body: await skills.read("demo", "modules/during-dining.md") }; }
+            catch (error) { return { rejected: true, message: error.message }; }
+          `,
+        });
+        expect(JSON.stringify(replaced)).not.toContain("REPLACED_BYTES");
+        expect(replaced.status).toBe("completed");
+        expect((replaced.value as { rejected?: boolean; message?: string }).rejected).toBe(true);
+        expect((replaced.value as { message?: string }).message).toMatch(/escapes skill root/);
+      }
     } finally {
       await fs.rm(tmpParent, { recursive: true, force: true });
     }
@@ -351,32 +376,6 @@ describe("Code Mode skills and read tools", () => {
     );
     await expect(readCodeModeSkill(workspaceSkill)).resolves.toBe("# skill\n");
   });
-
-  it.runIf(process.platform !== "win32")(
-    "rejects a selected skill root that is rebound before a companion read",
-    async () => {
-      const tmpParent = await fs.realpath(
-        await fs.mkdtemp(nodePath.join(os.tmpdir(), "oc-skill-root-rebind-")),
-      );
-      try {
-        const skillRoot = nodePath.join(tmpParent, "demo");
-        const selectedRoot = nodePath.join(tmpParent, "selected-demo");
-        const replacementRoot = nodePath.join(tmpParent, "replacement");
-        await fs.mkdir(skillRoot, { recursive: true });
-        await fs.mkdir(nodePath.join(replacementRoot, ".ssh"), { recursive: true });
-        await fs.writeFile(nodePath.join(skillRoot, "SKILL.md"), "# selected skill\n", "utf8");
-        await fs.writeFile(nodePath.join(replacementRoot, ".ssh", "id_rsa"), "SECRET", "utf8");
-        const skill = resolveFilesystemCodeModeSkill(nodePath.join(skillRoot, "SKILL.md"));
-        await fs.rename(skillRoot, selectedRoot);
-        await fs.symlink(replacementRoot, skillRoot, "dir");
-        await expect(readCodeModeSkill(skill, undefined, ".ssh/id_rsa")).rejects.toThrow(
-          /escapes skill root/,
-        );
-      } finally {
-        await fs.rm(tmpParent, { recursive: true, force: true });
-      }
-    },
-  );
 
   it.each([
     {
