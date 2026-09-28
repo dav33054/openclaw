@@ -614,7 +614,8 @@ export async function prepareEmbeddedAttemptSessionManager(input: {
     missingToolResultText: isOpenAIResponsesApi ? "aborted" : undefined,
     allowedToolNames: input.replayAllowedToolNames,
     trigger: attempt.trigger,
-    suppressNextUserMessagePersistence: attempt.suppressNextUserMessagePersistence,
+    suppressNextUserMessagePersistence:
+      prepareInitialUserTurnReplay !== undefined || attempt.suppressNextUserMessagePersistence,
     suppressTranscriptOnlyAssistantPersistence: attempt.suppressTranscriptOnlyAssistantPersistence,
     assistantErrorTranscript: attempt.assistantErrorTranscript,
     skipBeforeMessageWriteHooks: attempt.operation === "settled-tool-finalization",
