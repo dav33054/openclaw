@@ -13,6 +13,7 @@ registerChatMessageMetadataEnglish();
 type ForwardedAttributionOptions = Parameters<typeof renderForwardedAvatar>[1] & {
   mainKey?: string;
   linkSource?: boolean;
+  compact?: boolean;
 };
 
 /**
@@ -53,6 +54,35 @@ export function renderForwardedAttribution(
         : undefined);
   const sourceAgentPrefix =
     !sourceIsMainSession && sourceIsOtherAgent ? sourceAgentDisplayName : undefined;
+  if (opts.compact) {
+    const sourceName = sourceLabel ?? sourceSessionKey ?? group.senderSession?.agentId;
+    const label = sourceName
+      ? t("chat.messages.forwardedFromAgent", {
+          agentId: [sourceAgentPrefix, sourceName].filter(Boolean).join(" · "),
+        })
+      : t("chat.messages.forwardedMessage");
+    const queueHint = t("chat.messages.forwardedQueueHint");
+    // The producer owns this icon and accessible label; the titler supplies only its href.
+    return linkableSourceKey
+      ? html`<a
+          class="chat-forwarded-indicator markdown-session-link markdown-session-link--titled"
+          role="link"
+          tabindex="0"
+          data-session-key=${linkableSourceKey}
+          aria-label=${label}
+          aria-description=${queueHint}
+          title=${`${label}. ${queueHint}`}
+          >${icons.bot}</a
+        >`
+      : html`<span
+          class="chat-forwarded-indicator"
+          role="img"
+          aria-label=${label}
+          aria-description=${queueHint}
+          title=${`${label}. ${queueHint}`}
+          >${icons.bot}</span
+        >`;
+  }
   const sourceAvatar = sourceIsOtherAgent
     ? renderForwardedAvatar(sourceParsed.agentId, opts)
     : nothing;

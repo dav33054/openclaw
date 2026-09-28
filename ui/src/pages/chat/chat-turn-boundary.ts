@@ -1,4 +1,5 @@
 import { asNullableRecord as asRecord } from "@openclaw/normalization-core/record-coerce";
+import { normalizeInputProvenance } from "../../../../src/sessions/input-provenance.js";
 import type { ChatItem, MessageGroup, NormalizedMessage } from "../../lib/chat/chat-types.ts";
 import {
   normalizeMessage,
@@ -17,16 +18,18 @@ export function safeNormalizeMessage(message: unknown): NormalizedMessage | null
   }
 }
 
+export function isForwardedTurnBoundary(message: unknown): boolean {
+  const provenance = normalizeInputProvenance(asRecord(message)?.provenance);
+  return (
+    (provenance?.kind === "inter_session" && provenance.sourceTool === "sessions_send") ||
+    (provenance?.kind === "internal_system" &&
+      provenance.sourceTool === "cron" &&
+      Boolean(provenance.jobId && provenance.runId && provenance.sourceSessionKey))
+  );
+}
+
 export function assistantGroupIsForwardedBoundary(group: MessageGroup): boolean {
-  return group.messages.some(({ message }) => {
-    const provenance = asRecord(asRecord(message)?.provenance);
-    return (
-      (provenance?.kind === "inter_session" && provenance.sourceTool === "sessions_send") ||
-      (provenance?.kind === "internal_system" &&
-        provenance.sourceTool === "cron" &&
-        Boolean(provenance.jobId && provenance.runId && provenance.sourceSessionKey))
-    );
-  });
+  return group.messages.some(({ message }) => isForwardedTurnBoundary(message));
 }
 
 // Display attribution also accepts projected source metadata; turn ownership

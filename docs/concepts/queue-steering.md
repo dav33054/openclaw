@@ -117,6 +117,14 @@ waiting for worker setup or workspace sync.
 Messages waiting for a followup turn appear in the queue above the composer,
 including when the Gateway queues a message that could not be steered. They stay
 there across reconnects until consumed or canceled, without being sent again.
+Forwarded agent updates use the same compact queue with a robot source icon.
+The displayed order reflects acceptance time, not a promise of execution order:
+human turns can take priority over inter-agent work. Showing inputs together does
+not combine their permissions, change the queue mode, or grant new queue actions.
+
+Current Gateways return a bounded snapshot of active inputs. With older Gateways,
+the Control UI falls back to paging retained inputs to find the queue. Updating
+the Gateway removes that backlog-dependent discovery work.
 
 Use `followup` or `collect` when you want messages to queue by default instead of steering the active run. Use `interrupt` when the newest prompt should replace the active run.
 

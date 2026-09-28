@@ -29,6 +29,7 @@ import {
 } from "../../lib/sessions/session-key.ts";
 import type { ChatHistoryCursor } from "./chat-history-pagination.ts";
 import { matchesCompactionOperation } from "./chat-progress.ts";
+import { isForwardedTurnBoundary } from "./chat-turn-boundary.ts";
 import type { CompactionStatus, ProviderPolicyNotice } from "./tool-stream-contract.ts";
 
 const chatSessionProjections = new WeakMap<
@@ -393,34 +394,46 @@ export function publishChatSessionProjectionMessages(
 }
 
 // History arrays are replaced, never mutated; index each once, not per scroll render.
-const userIdentities = new WeakMap<
+const inputIdentities = new WeakMap<
   readonly unknown[],
-  { userIds: Set<string>; sendKeys: Set<string> }
+  { inputIds: Set<string>; sendKeys: Set<string> }
 >();
 
-/** Custody is its own display collection; only canonical user IDs can replace it. */
+export function isActiveChatInput(input: ChatPendingInputsPage["items"][number]): boolean {
+  return input.state === "queued" && asNullableRecord(input.message)?.display !== false;
+}
+
+/** Display queue membership is separate from the Gateway execution queue flag. */
+export function isQueuedChatInput(input: ChatPendingInputsPage["items"][number]): boolean {
+  return (
+    isActiveChatInput(input) && (input.queued === true || isForwardedTurnBoundary(input.message))
+  );
+}
+
+/** Canonical input IDs replace custody, including forwarded inputs projected as assistants. */
 export function selectChatInputDisplay(
   messages: readonly unknown[],
   queue: readonly ChatQueueItem[],
   inputs: ChatPendingInputsPage["items"],
 ) {
-  let identities = userIdentities.get(messages);
+  let identities = inputIdentities.get(messages);
   if (!identities) {
-    identities = { userIds: new Set(), sendKeys: new Set() };
+    identities = { inputIds: new Set(), sendKeys: new Set() };
     for (const message of messages) {
       const identity = readSessionMessageIdentity(message);
-      if (identity?.role === "user") {
-        if (identity.id) {
-          identities.userIds.add(identity.id);
-        }
-        if (identity.idempotencyKey) {
-          identities.sendKeys.add(identity.idempotencyKey);
-        }
+      if (identity?.id && (identity.role === "user" || isForwardedTurnBoundary(message))) {
+        identities.inputIds.add(identity.id);
+      }
+      if (identity?.role === "user" && identity.idempotencyKey) {
+        identities.sendKeys.add(identity.idempotencyKey);
       }
     }
-    userIdentities.set(messages, identities);
+    inputIdentities.set(messages, identities);
   }
-  const { userIds, sendKeys } = identities;
+  const { inputIds, sendKeys } = identities;
+  const visibleInputs = inputs.filter(
+    (input) => !inputIds.has(input.id) && asNullableRecord(input.message)?.display !== false,
+  );
   const accepted = new Set(inputs.map((input) => input.runId));
   return {
     queue: queue.filter(
@@ -430,13 +443,8 @@ export function selectChatInputDisplay(
           !sendKeys.has(item.sendRunId) &&
           !sendKeys.has(`${item.sendRunId}:user`)),
     ),
-    pendingInputs: inputs.filter(
-      (input) =>
-        !userIds.has(input.id) &&
-        !input.queued &&
-        asNullableRecord(input.message)?.display !== false,
-    ),
-    queuedInputs: inputs.filter((input) => !userIds.has(input.id) && input.queued),
+    pendingInputs: visibleInputs.filter((input) => !isQueuedChatInput(input)),
+    queuedInputs: visibleInputs.filter(isQueuedChatInput),
   };
 }
 
@@ -447,7 +455,7 @@ export function reconcileChatInputCustody(
   receipts: ChatInputReceipts = [],
 ) {
   const acceptedRunIds = new Set(
-    [...(page?.items ?? []), ...receipts]
+    [...(page?.items ?? []), ...(page?.queue?.items ?? []), ...receipts]
       .map((item) => item.runId)
       .filter((runId) => typeof runId === "string"),
   );
