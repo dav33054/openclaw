@@ -698,6 +698,20 @@ describe("runCliAgent before_agent_reply seam", () => {
     expect(executePreparedCliRunMock).not.toHaveBeenCalled();
   });
 
+  it("marks a hook-claimed turn as never reaching a provider so capture skips its silence", async () => {
+    hasHooksMock.mockImplementation((hookName) => hookName === "before_agent_reply");
+    runBeforeAgentReplyMock.mockResolvedValue({ handled: true });
+
+    const result = await runCliAgent({ ...baseRunParams, trigger: "cron" });
+
+    expect(result.meta).toMatchObject({
+      finalAssistantRawText: "NO_REPLY",
+      providerStarted: false,
+    });
+    const { resolveDiagnosticModelResponse } = await import("./diagnostic-model-response.js");
+    expect(resolveDiagnosticModelResponse(result)).toBeUndefined();
+  });
+
   it("re-arms setup progress when a cron hook does not claim", async () => {
     hasHooksMock.mockImplementation((hookName) => hookName === "before_agent_reply");
     runBeforeAgentReplyMock.mockResolvedValue(undefined);
