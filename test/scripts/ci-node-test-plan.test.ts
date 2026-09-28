@@ -4409,6 +4409,17 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       expect(startupHealthJob.planConcurrency).toBe(1);
       expect(startupHealthJob.env?.OPENCLAW_VITEST_MAX_WORKERS).toBeUndefined();
       for (const sibling of measuredSiblings) {
+        if (
+          sibling.configs.length === 1 &&
+          sibling.configs[0] === "test/vitest/vitest.commands.config.ts"
+        ) {
+          // Storage work floors can pin a split command sibling to two workers.
+          // Unsplit measured commands retain their allocation-derived worker budget.
+          expect([undefined, "2"], sibling.shard_name).toContain(
+            sibling.env?.OPENCLAW_VITEST_MAX_WORKERS,
+          );
+          continue;
+        }
         const isolated = /^agentic-gateway-server-isolated(?:-hosted-\d+)?$/u.test(
           sibling.shard_name,
         );
@@ -7418,6 +7429,29 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       defaultShards,
     );
   });
+
+  it.each(["blacksmith", "github", "hybrid"])(
+    "retains the exact selected plugin owner without the full %s plugin sweep",
+    (runnerBackend) => {
+      const target = "src/plugins/tools.optional.test.ts";
+      const config = "test/vitest/vitest.plugins.config.ts";
+      expect(resolveCanonicalNodeTestConfig(target, config)).toBe(config);
+      const onFallback = vi.fn();
+      const plan = createSelectedNodeTestShardBundles([target], { runnerBackend, onFallback });
+      expect(onFallback).not.toHaveBeenCalled();
+      expect(plan).not.toBeNull();
+      const groups = plan!.flatMap((job) => job.groups);
+      expect(groups).toHaveLength(1);
+      expect(groups[0]!.configs).toEqual([config]);
+      expect(groups[0]!.includePatterns).toEqual([target]);
+      expect(groups[0]!.requiresDist).toBe(false);
+      expect(
+        createNodeTestShards({ includeReleaseOnlyPluginShards: false }).some((shard) =>
+          shard.configs.includes(config),
+        ),
+      ).toBe(false);
+    },
+  );
 
   it("does not widen plugin coverage for deleted tests, sources, docs, or directories", () => {
     const deletedTest = "src/plugins/deleted-ci-routing.test.ts";
