@@ -1,3 +1,4 @@
+import { truncateWithMarker } from "@openclaw/normalization-core/utf16-slice";
 import {
   getChannelPlugin,
   normalizeChannelId as normalizeAnyChannelId,
@@ -5,7 +6,10 @@ import {
 import { resolveSessionConversationRef } from "../../channels/plugins/session-conversation.js";
 import { normalizeChatChannelId } from "../../channels/registry.js";
 import { parseSessionDeliveryRoute } from "../../sessions/session-key-utils.js";
+import { sanitizeAgentIdentityLine } from "../identity-file.js";
 import { ANNOUNCE_SKIP_TOKEN, REPLY_SKIP_TOKEN } from "./sessions-send-tokens.js";
+
+const MAX_A2A_REQUESTER_NAME_PROMPT_CHARS = 120;
 
 export type AnnounceTarget = {
   channel: string;
@@ -63,12 +67,21 @@ export function resolveAnnounceTargetFromKey(sessionKey: string): AnnounceTarget
 }
 
 function buildAgentSessionLines(params: {
+  requesterName?: string;
   requesterSessionKey?: string;
   requesterChannel?: string;
   targetSessionKey: string;
   targetChannel?: string;
 }): string[] {
+  const requesterName = params.requesterName
+    ? truncateWithMarker(
+        sanitizeAgentIdentityLine(params.requesterName),
+        MAX_A2A_REQUESTER_NAME_PROMPT_CHARS,
+        { marker: "...", reserve: 3, trimEnd: true },
+      )
+    : undefined;
   return [
+    requesterName ? `Agent 1 (requester) name: ${requesterName}.` : undefined,
     // Session keys are high-cardinality (thread/run ids), so concrete values churn the
     // system prompt and break provider prompt-cache reuse across A2A turns. Channels are
     // low-cardinality and inform reply formatting, so they stay concrete.
@@ -82,6 +95,7 @@ function buildAgentSessionLines(params: {
 }
 
 export function buildAgentToAgentMessageContext(params: {
+  requesterName?: string;
   requesterSessionKey?: string;
   requesterChannel?: string;
   targetSessionKey: string;
@@ -90,6 +104,7 @@ export function buildAgentToAgentMessageContext(params: {
 }
 
 export function buildAgentToAgentReplyContext(params: {
+  requesterName?: string;
   requesterSessionKey?: string;
   requesterChannel?: string;
   targetSessionKey: string;
@@ -110,6 +125,7 @@ export function buildAgentToAgentReplyContext(params: {
 }
 
 export function buildAgentToAgentAnnounceContext(params: {
+  requesterName?: string;
   requesterSessionKey?: string;
   requesterChannel?: string;
   targetSessionKey: string;
