@@ -30,9 +30,9 @@ import {
 import {
   closeOwnedWorkerTask,
   joinOwnedWorkerTask,
-  joinOwnedWorkerTasks,
   type OwnedWorkerTaskSettlement,
 } from "./worker-task-pool-owned.js";
+import { liveWorkerTaskPools } from "./worker-task-pool-registry.js";
 import { closeWorkerPoolResources } from "./worker-task-pool-resources.js";
 import { createWorkerTaskPoolRetirement } from "./worker-task-pool-retirement.js";
 import type {
@@ -297,7 +297,7 @@ class WorkerTaskPoolCore<Input, Output> {
     // A failed owned stop must be observed before that task permits its next retry.
     const unowned = [...this.slots].filter((slot) => !ownedSlots.has(slot));
     const closures = [...owned, ...unowned.map((slot) => this.retirement.retire(slot))];
-    return (tasks.length ? joinOwnedWorkerTasks(closures) : Promise.all(closures)).then(() =>
+    return liveWorkerTaskPools.close(this, closures, () =>
       joinWorkerTaskPreparationCleanups(this.completion, this.retirement.joinArtifacts()),
     );
   }
@@ -748,5 +748,7 @@ export function createWorkerTaskPoolCore<Input, Output>(
   options: WorkerTaskPoolOptions<Output>,
   publicDispatch?: WorkerTaskPoolDispatch,
 ) {
-  return new WorkerTaskPoolCore<Input, Output>(options, publicDispatch);
+  return liveWorkerTaskPools.register(
+    new WorkerTaskPoolCore<Input, Output>(options, publicDispatch),
+  );
 }
