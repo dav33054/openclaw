@@ -2,15 +2,15 @@
  * Real-trigger proof for the `sessions.abort` state-contention fix (PR #159282).
  *
  * The contention is not injected: a child process holds `BEGIN EXCLUSIVE` on the
- * real `state-lifecycle` coordinator database while a Control UI client calls
- * `sessions.abort` for a session with a live run. The recipe (acquire the
- * coordinator path, release it, let a spawned child own the lock) is the one
- * already used by `src/config/sessions/session-history-eviction.lifecycle-contention.test.ts`.
+ * real state-owner lock file while a Control UI client calls `sessions.abort`
+ * for a session with a live run. The recipe (resolve the owner path, release it,
+ * let a spawned child own the lock) follows the pattern already used by
+ * `src/config/sessions/session-history-eviction.lifecycle-contention.test.ts`.
  *
  * Expected on the fixed head: the RPC rejects with the typed
  * `UNAVAILABLE` / `details.errorKind === "state_contention"` shape.
- * Expected on unmodified base production: the raw
- * `StateDatabaseCoordinatorContentionError` escapes the handler instead.
+ * Expected on unmodified base production: the raw SQLite lock error escapes the
+ * handler unclassified instead.
  *
  * Throw site: `sessions.abort` reads its session before delegating, so for a
  * configured agent the contention surfaces from that own read
@@ -28,7 +28,7 @@ import { afterEach, expect, it } from "vitest";
 import { stopChildProcess } from "../../../test/helpers/stop-child-process.js";
 import { clearConfigCache, clearRuntimeConfigSnapshot } from "../../config/config.js";
 import { clearSessionStoreCacheForTest } from "../../config/sessions/store-writer-state.js";
-import { acquireStateDatabaseCoordinator } from "../../infra/state-database-coordinator.js";
+import { acquireGatewayStateOwner } from "../../infra/gateway-state-owner.js";
 import {
   closeOpenClawAgentDatabasesForTest,
   closeOpenClawAgentDatabasesAsync,
@@ -82,7 +82,7 @@ async function releaseLockChild(): Promise<boolean> {
   return exitedOnRelease;
 }
 
-/** Hold the real state-lifecycle coordinator from a separate OS process. */
+/** Hold the real state-owner lock from a separate OS process. */
 async function holdStateLifecycleLock(coordinatorPath: string): Promise<void> {
   const child = spawn(
     process.execPath,
@@ -237,21 +237,20 @@ it(
     // database is closed, so drop it and make Stop re-open under the foreign lock.
     await closeOpenClawAgentDatabasesAsync();
 
-    // Resolve the exact coordinator the Gateway uses, then hand the lock to a
+    // Resolve the exact state-owner lock the Gateway uses, then hand it to a
     // child process so no in-process ownership can absorb the contention.
     const databasePath = resolveOpenClawStateSqlitePath(testState.env);
-    const lease = acquireStateDatabaseCoordinator({ databasePath, busyTimeoutMs: 0 });
+    const lease = acquireGatewayStateOwner({ databasePath });
     const coordinatorPath = lease.path;
     lease.release();
-    expect(path.basename(coordinatorPath)).toMatch(/^state-lifecycle\.[0-9a-f]+\.lock\.sqlite$/);
     fs.mkdirSync(path.dirname(coordinatorPath), { recursive: true, mode: 0o700 });
     await holdStateLifecycleLock(coordinatorPath);
 
-    // The child owns the live coordinator path: a real state-lifecycle acquisition
-    // is refused while it holds the lock.
+    // The child owns the live state-owner lock: a real acquisition is refused
+    // while it holds that file.
+    expect(path.basename(coordinatorPath)).toMatch(/^state\.[0-9a-f]+\.lock$/);
     const stateDb = openOpenClawStateDatabase({ env: testState.env });
     expect(stateDb.walMaintenance.checkpoint()).toBe(false);
-    expect(stateDb.walMaintenance.health?.error ?? "").toContain("state-lifecycle");
 
     const outcome = await gateway.client
       .request("sessions.abort", { key: SESSION_KEY, runId }, { timeoutMs: 30_000 })
@@ -278,7 +277,7 @@ it(
       rpc: "rejected",
       code: "UNAVAILABLE",
       details: { errorKind: "state_contention" },
-      message: expect.stringContaining("state-lifecycle acquisition remained busy"),
+      message: expect.stringContaining("SQLite transaction admission remained busy"),
     });
   },
 );

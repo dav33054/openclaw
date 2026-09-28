@@ -1,10 +1,9 @@
-/** A Stop that meets state-lifecycle contention must keep the typed uncertainty notice. */
+/** A Stop that meets state-database contention must keep the typed uncertainty notice. */
 // Preserve module setup before modules that consume it.
 // oxfmt-ignore
 import { useChatAbortRegistryFixture } from "./chat.abort-registry.test-support.js";
 import { afterEach, expect, it, vi } from "vitest";
 import { getRuntimeConfig, setRuntimeConfigSnapshot } from "../../config/config.js";
-import { StateDatabaseCoordinatorContentionError } from "../../infra/state-database-coordinator-errors.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import { handleGatewayRequest } from "../server-methods.js";
 import { roleClient, rolePolicyConfig } from "../session-sharing.test-utils.js";
@@ -20,7 +19,7 @@ it("reports typed state contention from sessions.abort", async () => {
   const cfg = { ...getRuntimeConfig(), ...rolePolicyConfig() };
   setRuntimeConfigSnapshot(cfg);
   vi.spyOn(sessionUtils, "loadSessionEntry").mockImplementation(() => {
-    throw new StateDatabaseCoordinatorContentionError("state-lifecycle");
+    throw Object.assign(new Error("database is locked"), { code: "ERR_SQLITE_ERROR", errcode: 5 });
   });
   const respond = vi.fn();
   await handleGatewayRequest({
