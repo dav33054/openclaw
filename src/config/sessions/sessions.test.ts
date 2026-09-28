@@ -35,6 +35,26 @@ it("filters legacy row metadata with a noncanonical transcript id", () => {
   ).toBeUndefined();
 });
 
+it("keeps existing session metadata when a stored entry has no conversation link", () => {
+  const legacyEntry = {
+    sessionId: "existing-session",
+    updatedAt: 42,
+    pluginExtensions: { wordboard: { draftId: "draft-1" } },
+  };
+
+  const loaded = normalizePersistedSessionEntryShape(legacyEntry);
+  expect(loaded).toMatchObject({
+    sessionId: "existing-session",
+    updatedAt: 42,
+    pluginExtensions: { wordboard: { draftId: "draft-1" } },
+  });
+  expect(loaded).not.toHaveProperty("conversationLink");
+
+  const reopened = normalizePersistedSessionEntryShape(JSON.parse(JSON.stringify(loaded)));
+  expect(reopened).toMatchObject(loaded);
+  expect(reopened).not.toHaveProperty("conversationLink");
+});
+
 it("keeps only recognized archive reasons on archived rows", () => {
   expect(
     normalizePersistedSessionEntryShape({

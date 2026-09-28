@@ -18,7 +18,8 @@
   },
   "devDependencies": {
     "@openclaw/plugin-sdk": "workspace:*",
-    "openclaw": "workspace:*"
+    "openclaw": "workspace:*",
+    "tsx": "4.23.13"
   },
   "peerDependencies": {
     "openclaw": ">=2026.9.6"
@@ -163,6 +164,14 @@
     "release": {
       "publishToClawHub": true,
       "publishToNpm": true
+    },
+    "controlUi": "./browser/index.ts",
+    "assetScripts": {
+      "build": "pnpm exec tsx --tsconfig ../../tsconfig.json ../../scripts/build-plugin-control-ui.mts",
+      "copy": "pnpm exec tsx --tsconfig ../../tsconfig.json ../../scripts/build-plugin-control-ui.mts --copy",
+      "buildOutputs": [
+        "openclaw.plugin.json"
+      ]
     }
   }
 }

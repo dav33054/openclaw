@@ -454,7 +454,7 @@ export async function spawnAcpDirect(
         storePath: parentStorePath,
       });
       ctx.assertActive?.();
-      const inheritedGitContributorProfileIds = isIncognitoSessionKey(requesterInternalKey)
+      const parentEntry = isIncognitoSessionKey(requesterInternalKey)
         ? undefined
         : await withSessionEntryReadOnlyInWorker(
             {
@@ -467,13 +467,14 @@ export async function spawnAcpDirect(
               if (!read.ok) {
                 throw read.error;
               }
-              return inheritSessionGitContributorProfileIds(read.value);
+              return read.value;
             },
           );
       const creationStamp = buildSessionCreationStamp({
         via: "spawn",
         actor: { type: "agent", id: requesterAgentId },
-        inheritedGitContributorProfileIds,
+        inheritedGitContributorProfileIds: inheritSessionGitContributorProfileIds(parentEntry),
+        conversationLink: parentEntry?.conversationLink,
       });
       const storePath = resolveSessionStorePathCore(cfg.session?.store, { agentId: targetAgentId });
       const childSessionPatch = admission.childSessionPatch

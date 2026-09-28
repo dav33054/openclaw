@@ -61,6 +61,7 @@ export {
   type SessionsPatchParams,
 } from "./sessions-patch.js";
 export {
+  SessionConversationLinkSchema,
   SessionAncestorRefSchema,
   SessionCreatedActorSchema,
   SessionEventAncestorsSchema,
@@ -70,6 +71,7 @@ export {
   SessionToolOverridesSchema,
   type SessionAncestorRef,
   type SessionCreatedActor,
+  type SessionConversationLink,
   type SessionEventAncestors,
   type SessionOwner,
   type SessionPermissionMode,

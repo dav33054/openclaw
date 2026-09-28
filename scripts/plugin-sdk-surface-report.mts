@@ -195,12 +195,14 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
     ),
     publicExports: readPluginSdkSurfaceBudgetEnv(
       "OPENCLAW_PLUGIN_SDK_MAX_PUBLIC_EXPORTS",
-      4591,
+      // +1: shared plugin-owned session-header link factory for Discord and Slack.
+      4592,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
       "OPENCLAW_PLUGIN_SDK_MAX_PUBLIC_FUNCTION_EXPORTS",
-      2695,
+      // +1: shared plugin-owned session-header link factory for Discord and Slack.
+      2696,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(
