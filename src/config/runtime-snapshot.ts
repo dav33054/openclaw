@@ -130,6 +130,7 @@ export type RuntimeConfigSnapshotMetadata = {
 
 let runtimeConfigSnapshot: OpenClawConfig | null = null;
 let runtimeConfigSourceSnapshot: OpenClawConfig | null = null;
+let publishedRuntimeConfigs = new WeakSet<OpenClawConfig>();
 let runtimeConfigSnapshotMetadata: RuntimeConfigSnapshotMetadata | null = null;
 let runtimeConfigAppliedHash: string | null = null;
 let runtimeConfigSnapshotRevision = 0;
@@ -241,6 +242,10 @@ function publishRuntimeConfigSnapshot(config: OpenClawConfig, sourceConfig?: Ope
   clearExecutablePathCache();
   runtimeConfigSnapshot = config;
   runtimeConfigSourceSnapshot = sourceConfig ?? null;
+  publishedRuntimeConfigs.add(config);
+  if (sourceConfig) {
+    publishedRuntimeConfigs.add(sourceConfig);
+  }
   runtimeConfigSnapshotMetadata = createRuntimeConfigSnapshotMetadata(config, sourceConfig);
   sessionChanges.emit({ all: true, scope });
 }
@@ -350,6 +355,7 @@ export function resetConfigRuntimeState(options: { preserveConfigEnv?: boolean }
   clearExecutablePathCache();
   runtimeConfigSnapshot = null;
   runtimeConfigSourceSnapshot = null;
+  publishedRuntimeConfigs = new WeakSet();
   runtimeConfigSnapshotMetadata = null;
   runtimeConfigAppliedHash = null;
   runtimeConfigSnapshotRevision = 0;
@@ -368,6 +374,11 @@ export function getRuntimeConfigSnapshot(): OpenClawConfig | null {
 
 export function getRuntimeConfigSourceSnapshot(): OpenClawConfig | null {
   return runtimeConfigSourceSnapshot;
+}
+
+/** Rebinds queued work captured from a published generation, without replacing caller overrides. */
+export function resolvePublishedRuntimeConfig(config: OpenClawConfig): OpenClawConfig | null {
+  return publishedRuntimeConfigs.has(config) ? runtimeConfigSnapshot : null;
 }
 
 export function getRuntimeConfigSnapshotMetadata(): RuntimeConfigSnapshotMetadata | null {
