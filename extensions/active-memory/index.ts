@@ -452,6 +452,23 @@ export default definePluginEntry({
                 ? createActiveMemoryDecisionEscalationDecider({
                     decisions: api.runtime.decisions,
                     agentId: effectiveAgentId,
+                    isStillAllowed: () => {
+                      const currentConfig = readCurrentConfig();
+                      const currentPluginConfig = isActiveMemoryPluginEnabled(currentConfig)
+                        ? (resolveLivePluginConfigObject(
+                            () => currentConfig,
+                            "active-memory",
+                            api.pluginConfig as Record<string, unknown>,
+                          ) ?? {})
+                        : { enabled: false };
+                      const current = normalizePluginConfig(currentPluginConfig, currentConfig);
+                      return (
+                        current.enabled &&
+                        current.mode === "escalate" &&
+                        current.escalationDecision &&
+                        isActiveMemoryDecisionEscalationEligible(currentConfig)
+                      );
+                    },
                     onAbstain: (reason) => {
                       api.logger.debug?.(
                         `active-memory: escalation decision unavailable reason=${reason}; using built-in matcher`,

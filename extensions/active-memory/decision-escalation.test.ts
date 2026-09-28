@@ -98,6 +98,7 @@ describe("active-memory decision escalation", () => {
     const decider = createActiveMemoryDecisionEscalationDecider({
       decisions: { evaluate },
       agentId: "main",
+      isStillAllowed: () => true,
     });
 
     await expect(
@@ -128,6 +129,7 @@ describe("active-memory decision escalation", () => {
     const decider = createActiveMemoryDecisionEscalationDecider({
       decisions: { evaluate: async () => ({ status: "unavailable", reason: "disabled" }) },
       agentId: "main",
+      isStillAllowed: () => true,
       onAbstain,
     });
 
@@ -140,6 +142,28 @@ describe("active-memory decision escalation", () => {
       }),
     ).resolves.toBe("abstain");
     expect(onAbstain).toHaveBeenCalledWith("disabled");
+  });
+
+  it("does not evaluate when consent was revoked after the hook started", async () => {
+    const evaluate = vi.fn(async () => booleanOutcome(1));
+    const onAbstain = vi.fn();
+    const decider = createActiveMemoryDecisionEscalationDecider({
+      decisions: { evaluate },
+      agentId: "main",
+      isStillAllowed: () => false,
+      onAbstain,
+    });
+
+    await expect(
+      decider.decide({
+        message: "What did we decide last time?",
+        searchQuery: "What did we decide last time?",
+        signal: new AbortController().signal,
+        timeoutMs: 100,
+      }),
+    ).resolves.toBe("abstain");
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(onAbstain).toHaveBeenCalledWith("revoked");
   });
 
   it.each([

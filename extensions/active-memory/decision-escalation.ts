@@ -45,11 +45,13 @@ export function buildActiveMemoryEscalationDecisionBatch(params: {
   };
 }
 
+export type ActiveMemoryDecisionAbstainReason = UnavailableReason | "invalid-answer" | "revoked";
+
 export function mapActiveMemoryEscalationDecisionOutcome(
   outcome: DecisionOutcome,
 ):
   | { result: "recall" | "skip" }
-  | { result: "abstain"; reason: UnavailableReason | "invalid-answer" } {
+  | { result: "abstain"; reason: ActiveMemoryDecisionAbstainReason } {
   if (outcome.status !== "ok") {
     return { result: "abstain", reason: outcome.reason };
   }
@@ -72,10 +74,20 @@ export function mapActiveMemoryEscalationDecisionOutcome(
 export function createActiveMemoryDecisionEscalationDecider(params: {
   decisions: Pick<DecisionRuntimeV1, "evaluate">;
   agentId: string;
-  onAbstain?: (reason: UnavailableReason | "invalid-answer") => void;
+  /**
+   * Rereads live consent immediately before evaluation. The hook checked it
+   * earlier, but deterministic recall may have awaited since, and a revoked
+   * opt-in must not let turn evidence reach a hosted Decision model.
+   */
+  isStillAllowed: () => boolean;
+  onAbstain?: (reason: ActiveMemoryDecisionAbstainReason) => void;
 }): RecallEscalationDecider {
   return {
     async decide({ message, searchQuery, signal, timeoutMs }) {
+      if (!params.isStillAllowed()) {
+        params.onAbstain?.("revoked");
+        return "abstain";
+      }
       const outcome = await params.decisions.evaluate(
         buildActiveMemoryEscalationDecisionBatch({ message, searchQuery }),
         {
