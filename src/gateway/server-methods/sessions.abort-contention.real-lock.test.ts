@@ -1,11 +1,12 @@
 /**
  * Real-trigger proof for the `sessions.abort` state-contention fix (PR #159282).
  *
- * The contention is not injected: a child process holds `BEGIN EXCLUSIVE` on the
- * real state-owner lock file while a Control UI client calls `sessions.abort`
- * for a session with a live run. The recipe (resolve the owner path, release it,
- * let a spawned child own the lock) follows the pattern already used by
- * `src/config/sessions/session-history-eviction.lifecycle-contention.test.ts`.
+ * The contention is not injected: since #157413, ordinary state writes are
+ * transactions on the actual SQLite state database, so the production
+ * contention is a foreign process holding a write transaction on
+ * `openclaw.sqlite` itself. A child process holds `BEGIN EXCLUSIVE` on that
+ * real database file while a Control UI client calls `sessions.abort` for a
+ * session with a live run.
  *
  * Expected on the fixed head: the RPC rejects with the typed
  * `UNAVAILABLE` / `details.errorKind === "state_contention"` shape.
@@ -21,22 +22,17 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import fs from "node:fs";
 import { createServer, type Server, type ServerResponse } from "node:http";
-import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it } from "vitest";
 import { stopChildProcess } from "../../../test/helpers/stop-child-process.js";
 import { clearConfigCache, clearRuntimeConfigSnapshot } from "../../config/config.js";
 import { clearSessionStoreCacheForTest } from "../../config/sessions/store-writer-state.js";
-import { acquireGatewayStateOwner } from "../../infra/gateway-state-owner.js";
 import {
   closeOpenClawAgentDatabasesForTest,
   closeOpenClawAgentDatabasesAsync,
 } from "../../state/openclaw-agent-db.js";
-import {
-  closeOpenClawStateDatabaseForTest,
-  openOpenClawStateDatabase,
-} from "../../state/openclaw-state-db.js";
+import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import {
   createOpenClawTestState,
@@ -56,9 +52,9 @@ let gateway: Awaited<ReturnType<typeof startGatewayWithClient>> | undefined;
 let lockChild: ChildProcess | undefined;
 
 /**
- * Releases the foreign lock and reports whether the child rolled back and exited
- * by itself. Only an unresponsive child is killed, so a still-held lock cannot
- * hide behind the five-second exit timeout.
+ * Releases the foreign write transaction and reports whether the child rolled
+ * back and exited by itself. Only an unresponsive child is killed, so a
+ * still-held lock cannot hide behind the five-second exit timeout.
  */
 async function releaseLockChild(): Promise<boolean> {
   const child = lockChild;
@@ -82,8 +78,12 @@ async function releaseLockChild(): Promise<boolean> {
   return exitedOnRelease;
 }
 
-/** Hold the real state-owner lock from a separate OS process. */
-async function holdStateLifecycleLock(coordinatorPath: string): Promise<void> {
+/**
+ * Holds a foreign write transaction on the real state database from a separate
+ * OS process. The journal mode is left untouched: the database stays in WAL,
+ * exactly as the Gateway runs it.
+ */
+async function holdStateDatabaseWriteLock(databasePath: string): Promise<void> {
   const child = spawn(
     process.execPath,
     [
@@ -92,7 +92,7 @@ async function holdStateLifecycleLock(coordinatorPath: string): Promise<void> {
       `
         import { DatabaseSync } from 'node:sqlite';
         const db = new DatabaseSync(process.argv[1]);
-        db.exec('PRAGMA journal_mode=MEMORY; BEGIN EXCLUSIVE');
+        db.exec('PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE');
         process.send({ ready: true });
         process.once('message', () => {
           db.exec('ROLLBACK');
@@ -100,7 +100,7 @@ async function holdStateLifecycleLock(coordinatorPath: string): Promise<void> {
           process.disconnect();
         });
       `,
-      coordinatorPath,
+      databasePath,
     ],
     { stdio: ["ignore", "ignore", "pipe", "ipc"] },
   );
@@ -237,20 +237,21 @@ it(
     // database is closed, so drop it and make Stop re-open under the foreign lock.
     await closeOpenClawAgentDatabasesAsync();
 
-    // Resolve the exact state-owner lock the Gateway uses, then hand it to a
-    // child process so no in-process ownership can absorb the contention.
+    // Resolve the real shared-state database the Gateway serves, then hand its
+    // write lock to a child process so no in-process connection can absorb the
+    // contention.
     const databasePath = resolveOpenClawStateSqlitePath(testState.env);
-    const lease = acquireGatewayStateOwner({ databasePath });
-    const coordinatorPath = lease.path;
-    lease.release();
-    fs.mkdirSync(path.dirname(coordinatorPath), { recursive: true, mode: 0o700 });
-    await holdStateLifecycleLock(coordinatorPath);
+    await holdStateDatabaseWriteLock(databasePath);
 
-    // The child owns the live state-owner lock: a real acquisition is refused
-    // while it holds that file.
-    expect(path.basename(coordinatorPath)).toMatch(/^state\.[0-9a-f]+\.lock$/);
-    const stateDb = openOpenClawStateDatabase({ env: testState.env });
-    expect(stateDb.walMaintenance.checkpoint()).toBe(false);
+    // The child owns the database write lock: a fresh connection cannot start a
+    // write transaction while it holds it.
+    const probe = new DatabaseSync(databasePath);
+    try {
+      probe.exec("PRAGMA busy_timeout = 0");
+      expect(() => probe.exec("BEGIN IMMEDIATE")).toThrowError(/database is locked/);
+    } finally {
+      probe.close();
+    }
 
     const outcome = await gateway.client
       .request("sessions.abort", { key: SESSION_KEY, runId }, { timeoutMs: 30_000 })
