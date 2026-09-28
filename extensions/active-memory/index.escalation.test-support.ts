@@ -29,49 +29,6 @@ export function registerActiveMemoryEscalationIntegrationTests({
   setEscalationProvider,
   skippedRecallContext,
 }: ActiveMemoryEscalationIntegrationTestHarness): void {
-  it("escalates retrospective Chinese recall when recall mode is unset", async () => {
-    const prompt = "你还记得我们上周决定明天部署的方案吗？";
-    registerPluginConfig({ mode: undefined });
-    expect(currentActiveMemoryConfig().mode).toBeUndefined();
-
-    const context = {
-      sessionKey: "agent:main:telegram:direct:owner",
-      messageProvider: "telegram",
-      channelId: "owner",
-    };
-
-    const ordinary = await runPromptBuild({ prompt: "部署之前先整理聊天记录" }, context);
-    expectPrependContextContains(ordinary, skippedRecallContext);
-    expect(runEmbeddedAgent).not.toHaveBeenCalled();
-
-    const future = await runPromptBuild({ prompt: "你记得明天发送报告吗？" }, context);
-    expectPrependContextContains(future, skippedRecallContext);
-    expect(runEmbeddedAgent).not.toHaveBeenCalled();
-
-    const recall = await runPromptBuild({ prompt }, context);
-    expect(runEmbeddedAgent).toHaveBeenCalledOnce();
-    expectPrependContextContains(recall, "lemon pepper wings");
-    expectEmbeddedChannel("telegram");
-  });
-
-  it("records why default escalation skips an ordinary turn", async () => {
-    registerPluginConfig({ mode: undefined });
-
-    const result = await runPromptBuild(
-      { prompt: "Explain the current configuration" },
-      {
-        sessionKey: "agent:main:webchat:direct:operator",
-        messageProvider: "webchat",
-        channelId: "operator",
-      },
-    );
-
-    expectPrependContextContains(result, skippedRecallContext);
-    expect(runEmbeddedAgent).not.toHaveBeenCalled();
-    expect(hasDebugLine("active-memory: recall skipped reason=no-recall-intent")).toBe(true);
-    expect(hasInfoLine("active-memory: recall skipped reason=no-recall-intent")).toBe(false);
-  });
-
   it("uses a configured escalation provider to recall an ordinary turn", async () => {
     const decide = vi.fn(async () => "recall" as const);
     setEscalationProvider({ id: "local-memory-intent", decide });

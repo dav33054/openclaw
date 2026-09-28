@@ -34,6 +34,7 @@ export function makeContextParams(
   return {
     runtime: {
       getSessionRowProjection: () => undefined,
+      forgetConnectionAncestors: vi.fn(),
       connectionWork: { track: trackAsyncWork },
       deps: {} as never,
       runtimeState: {
@@ -160,6 +161,7 @@ export function makeContextParams(
     configRevisionProjector: {
       projectRawHash: (hash) => hash,
       projectResolvedHash: (hash) => hash,
+      hashResponseSessionBearer: () => "unused-test-scope",
     },
   };
 }
