@@ -802,6 +802,29 @@ function expectInvalidDockerEnv(
 }
 
 describe("docker build helper", () => {
+  it("ships sandbox image builders in the npm package", () => {
+    const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as {
+      files: string[];
+    };
+
+    expect(packageJson.files).toEqual(
+      expect.arrayContaining([
+        "scripts/sandbox-setup.sh",
+        "scripts/sandbox-common-setup.sh",
+        "scripts/sandbox-browser-setup.sh",
+        "scripts/sandbox-browser-entrypoint.sh",
+        "scripts/lib/docker-build.sh",
+        "scripts/lib/docker-e2e-logs.sh",
+        "scripts/lib/docker-e2e-container.sh",
+        "scripts/lib/docker-e2e-resource-diagnostics.sh",
+        "scripts/lib/docker-e2e-watchdog.mjs",
+        "scripts/docker/sandbox/Dockerfile",
+        "scripts/docker/sandbox/Dockerfile.common",
+        "scripts/docker/sandbox/Dockerfile.browser",
+      ]),
+    );
+  });
+
   it.each(["0", "1"])("isolates helper snippets from shell hooks at SHLVL=%s", (shellLevel) => {
     const home = tempDirs.make("openclaw-docker-shell-hooks-");
     const marker = join(home, "hook-ran");
@@ -1420,6 +1443,43 @@ docker_build_run limit-proof -t fixture .
     expect(renderedSummary).toContain("src/a,b.ts");
     expect(renderedSummary).toContain("one two%");
     expect(renderedSummary.match(/Warning: Size: budget/gu)).toHaveLength(1);
+  });
+
+  it("keeps an installed sandbox build successful when Docker emits a limit warning", () => {
+    const workDir = tempDirs.make("openclaw-packaged-sandbox-warning-");
+    const packageRoot = join(workDir, "package");
+    for (const relativePath of [
+      "scripts/sandbox-setup.sh",
+      "scripts/lib/docker-build.sh",
+      "scripts/lib/docker-e2e-logs.sh",
+      "scripts/lib/docker-e2e-container.sh",
+      "scripts/lib/docker-e2e-resource-diagnostics.sh",
+      "scripts/lib/docker-e2e-watchdog.mjs",
+    ]) {
+      const destination = join(packageRoot, relativePath);
+      mkdirSync(dirname(destination), { recursive: true });
+      copyFileSync(relativePath, destination);
+    }
+    writeExecutables(join(workDir, "bin"), {
+      timeout: PASSTHROUGH_TIMEOUT_SCRIPT,
+      docker: `#!/bin/sh
+printf '#17 3.4 ::warning file=src/example.ts,line=7,col=0,title=Size::limit exceeded\n'
+printf '#17 4.1 ::warning file=src/example.ts,line=7,col=0,title=Size::limit exceeded\n'
+`,
+    });
+
+    const result = spawnDockerSnippet(
+      repoShell(workDir)`
+export PATH="$TMPDIR/bin:$PATH"
+export OPENCLAW_DOCKER_BUILD_RETRIES=0
+"$TMPDIR/package/scripts/sandbox-setup.sh"
+`,
+      { encoding: "utf8" },
+    );
+    expect(existsSync(join(packageRoot, "scripts/relay-build-limit-warnings.mts"))).toBe(false);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr.match(/::warning file=src\/example\.ts/gmu)).toHaveLength(1);
+    expect(result.stdout).toContain("Built openclaw-sandbox:bookworm-slim");
   });
 
   it("prints heartbeat progress for long successful centralized Docker builds", () => {
