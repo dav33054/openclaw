@@ -195,7 +195,7 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
     ),
     publicExports: readPluginSdkSurfaceBudgetEnv(
       "OPENCLAW_PLUGIN_SDK_MAX_PUBLIC_EXPORTS",
-      4591,
+      4592, // +1: WhatsApp poll_vote_received plugin hook event contract.
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
