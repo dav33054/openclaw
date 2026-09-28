@@ -412,20 +412,33 @@ describe("registered Discord metadata reads", () => {
     ).rejects.toThrow("Unexpected Discord response for active thread list.");
   });
 
-  it("fails the list when parent metadata cannot be verified", async () => {
-    fixture.discord.guilds = {
-      [guildId]: { channels: { [current]: { enabled: true } } },
-    };
-    fixture.routes.delete(`/channels/${current}`);
+  it.each(["unavailable", "mismatched"])(
+    "rejects %s parent metadata before fetching the guild inventory",
+    async (metadata) => {
+      fixture.discord.guilds = {
+        [guildId]: { channels: { [current]: { enabled: true } } },
+      };
+      if (metadata === "unavailable") {
+        fixture.routes.delete(`/channels/${current}`);
+      } else {
+        fixture.routes.set(`/channels/${current}`, {
+          body: { ...channels[0], guild_id: sibling },
+        });
+      }
 
-    await expect(
-      dispatchChannelMessageAction({
-        ...fixture.context,
-        action: "thread-list",
-        params: { guildId, channelId: current },
-      }),
-    ).rejects.toThrow("Discord active thread parent metadata is unavailable.");
-  });
+      await expect(
+        dispatchChannelMessageAction({
+          ...fixture.context,
+          action: "thread-list",
+          params: { guildId, channelId: current },
+        }),
+      ).rejects.toThrow("Discord active thread parent metadata is unavailable.");
+      expect(fixture.requests).not.toContainEqual({
+        method: "GET",
+        path: `/guilds/${guildId}/threads/active`,
+      });
+    },
+  );
 
   it.each([dmId, `channel:${dmId}`, `user:${userId}`])(
     "reacts in the current DM through its registered adapter (%s)",

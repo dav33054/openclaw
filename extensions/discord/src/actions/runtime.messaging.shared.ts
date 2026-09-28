@@ -62,7 +62,11 @@ export type DiscordMessagingActionContext = {
   options?: DiscordMessagingActionOptions;
   accountId?: string;
   resolveChannelId: () => string;
-  assertReadTargetAllowed: (params: { guildId?: string; channelId: string }) => Promise<void>;
+  assertReadTargetAllowed: (params: {
+    guildId?: string;
+    channelId: string;
+    requireGuildMetadata?: boolean;
+  }) => Promise<void>;
   assertGuildReadTargetAllowed: (params: {
     guildId: string;
     channelTargetRequiredMessage?: string;
@@ -472,9 +476,15 @@ export function createDiscordMessagingActionContext(params: {
           required: true,
         }),
       ),
-    assertReadTargetAllowed: async ({ guildId, channelId }) => {
+    assertReadTargetAllowed: async ({ guildId, channelId, requireGuildMetadata }) => {
       const targetChannelId = resolveDiscordChannelId(channelId);
       const target = await resolveReadTargetContext(targetChannelId);
+      if (
+        requireGuildMetadata &&
+        (!guildId || !target.metadataKnown || target.guildId !== guildId)
+      ) {
+        throw new Error("Discord active thread parent metadata is unavailable.");
+      }
       const currentConversation = isCurrentReadTarget(targetChannelId);
       if (guildId && target.metadataKnown && target.guildId !== guildId) {
         throw new Error("Discord read target channel is not allowed.");

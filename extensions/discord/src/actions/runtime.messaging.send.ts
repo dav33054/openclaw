@@ -357,7 +357,11 @@ export async function handleDiscordMessageSendAction(ctx: DiscordMessagingAction
       const before = readStringParam(ctx.params, "before");
       const limit = readPositiveIntegerParam(ctx.params, "limit");
       if (channelId) {
-        await ctx.assertReadTargetAllowed({ guildId, channelId });
+        await ctx.assertReadTargetAllowed({
+          guildId,
+          channelId,
+          requireGuildMetadata: includeArchived !== true,
+        });
       } else {
         await ctx.assertGuildReadTargetAllowed({
           guildId,
