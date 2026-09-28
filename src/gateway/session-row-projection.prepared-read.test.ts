@@ -1,6 +1,7 @@
 import { DatabaseSync, StatementSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
 import { withTestTimeout } from "../../test/helpers/promise.js";
+import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import {
   loadSessionEntryReadOnly,
   replaceSessionEntrySync,
@@ -365,125 +366,157 @@ it.each([
   },
 );
 
-it("serves an exact description while an unrelated bulk placement refresh is held", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    const placements = createWorkerSessionPlacementStore();
-    const rows: PlacementRow[] = [];
-    for (const name of ["exact", "bulk"]) {
-      const sessionId = `independent-placement-${name}`;
-      const key = `agent:main:${sessionId}`;
-      replaceSessionEntrySync({ agentId: "main", sessionKey: key }, { sessionId, updatedAt: 1 });
-      rows.push({
-        key,
-        sessionId,
-        placement: await placements.startDispatch({ agentId: "main", sessionKey: key, sessionId }),
-      });
-    }
-    const exactRow = rows[0]!;
-    const bulkRow = rows[1]!;
-    const bulkEntered = createDeferredCore();
-    const releaseBulk = createDeferredCore();
-    let holdBulk = false;
-    const readProjection = async (
-      ids: readonly string[],
-    ): Promise<WorkerSessionPlacementProjection> => {
-      const snapshot: WorkerSessionPlacementProjection = {
-        placements: new Map(
-          rows
-            .filter((row) => ids.includes(row.sessionId))
-            .map((row) => [row.sessionId, row.placement]),
-        ),
-        moves: new Map(),
-        pendingResults: new Map(),
-        workspaceJournalOwnerSessionIds: new Set(),
-        environments: new Map(),
-        workspaceResultReconcilingSessionIds: new Set(),
-        workspaceRecoveryPendingSessionIds: new Set(),
-      };
-      if (holdBulk && ids.includes(bulkRow.sessionId)) {
-        bulkEntered.resolve();
-        await releaseBulk.promise;
-      }
-      return snapshot;
-    };
-    const releaseForeground = retainSessionListForegroundWork();
-    const projection = await createSessionRowProjection({
-      cfg,
-      modelCatalog: [],
-      placementFactsReader: { readProjection },
-    }).catch((error: unknown) => {
-      releaseForeground();
-      throw error;
-    });
-    const context = bindSessionRowProjection(requestContext(cfg), () => projection);
-    const pending: Promise<unknown>[] = [];
-    try {
-      await projection.ensureMaterialized();
-      for (const row of rows) {
-        expect(projection.snapshot({ agentId: "main", key: row.key }).row?.placement).toEqual(
-          projectWorkerSessionPlacement(row.placement),
+it.each([false, true])(
+  "serves an exact description while an unrelated bulk placement refresh is held (category: %s)",
+  async (category) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const placements = createWorkerSessionPlacementStore();
+      const rows: PlacementRow[] = [];
+      for (const name of ["exact", "bulk"]) {
+        const sessionId = `independent-placement-${name}`;
+        const key = `agent:main:${sessionId}`;
+        replaceSessionEntrySync(
+          { agentId: "main", sessionKey: key },
+          {
+            sessionId,
+            updatedAt: 1,
+            label: name === "exact" ? "Fresh exact description" : undefined,
+          },
         );
+        rows.push({
+          key,
+          sessionId,
+          placement: await placements.startDispatch({
+            agentId: "main",
+            sessionKey: key,
+            sessionId,
+          }),
+        });
       }
-      holdBulk = true;
-      bulkRow.placement = placements.transition({
-        sessionId: bulkRow.sessionId,
-        from: "requested",
-        to: "provisioning",
-        expectedGeneration: bulkRow.placement.generation,
+      const exactRow = rows[0]!;
+      const bulkRow = rows[1]!;
+      const bulkEntered = createDeferredCore();
+      const releaseBulk = createDeferredCore();
+      let holdBulk = false;
+      const readProjection = async (
+        ids: readonly string[],
+      ): Promise<WorkerSessionPlacementProjection> => {
+        const snapshot: WorkerSessionPlacementProjection = {
+          placements: new Map(
+            rows
+              .filter((row) => ids.includes(row.sessionId))
+              .map((row) => [row.sessionId, row.placement]),
+          ),
+          moves: new Map(),
+          pendingResults: new Map(),
+          workspaceJournalOwnerSessionIds: new Set(),
+          environments: new Map(),
+          workspaceResultReconcilingSessionIds: new Set(),
+          workspaceRecoveryPendingSessionIds: new Set(),
+        };
+        if (holdBulk && ids.includes(bulkRow.sessionId)) {
+          bulkEntered.resolve();
+          await releaseBulk.promise;
+        }
+        return snapshot;
+      };
+      const releaseForeground = retainSessionListForegroundWork();
+      const projection = await createSessionRowProjection({
+        cfg,
+        modelCatalog: [],
+        placementFactsReader: { readProjection },
+      }).catch((error: unknown) => {
+        releaseForeground();
+        throw error;
       });
-      reportPlacementTransition(undefined, bulkRow.placement);
-      const bulk = projection.ensureMaterialized();
-      pending.push(Promise.allSettled([bulk]));
-      await withTestTimeout(bulkEntered.promise, 2_000, "Bulk placement refresh did not enter");
-      replaceSessionEntrySync(
-        { agentId: "main", sessionKey: exactRow.key },
-        { sessionId: exactRow.sessionId, updatedAt: 2, label: "Fresh exact description" },
-      );
-      exactRow.placement = placements.transition({
-        sessionId: exactRow.sessionId,
-        from: "requested",
-        to: "provisioning",
-        expectedGeneration: exactRow.placement.generation,
-      });
-      reportPlacementTransition(undefined, exactRow.placement);
-      const respond = vi.fn();
-      const description = Promise.resolve(
-        sessionByKeyReadHandlers["sessions.describe"]!({
-          req: { type: "req", id: exactRow.sessionId, method: "sessions.describe" },
-          params: { key: exactRow.key },
-          client: null,
-          context,
-          isWebchatConnect: () => false,
-          respond,
-        }),
-      );
-      pending.push(Promise.allSettled([description]));
-      await withTestTimeout(
-        description,
-        2_000,
-        "Exact description waited for an unrelated bulk placement refresh",
-      );
-      expect(respond).toHaveBeenCalledExactlyOnceWith(true, {
-        session: expect.objectContaining({
-          key: exactRow.key,
+      const context = bindSessionRowProjection(requestContext(cfg), () => projection);
+      const pending: Promise<unknown>[] = [];
+      try {
+        await projection.ensureMaterialized();
+        for (const row of rows) {
+          expect(projection.snapshot({ agentId: "main", key: row.key }).row?.placement).toEqual(
+            projectWorkerSessionPlacement(row.placement),
+          );
+        }
+        holdBulk = true;
+        bulkRow.placement = placements.transition({
+          sessionId: bulkRow.sessionId,
+          from: "requested",
+          to: "provisioning",
+          expectedGeneration: bulkRow.placement.generation,
+        });
+        reportPlacementTransition(undefined, bulkRow.placement);
+        const bulk = projection.ensureMaterialized();
+        pending.push(Promise.allSettled([bulk]));
+        await withTestTimeout(bulkEntered.promise, 2_000, "Bulk placement refresh did not enter");
+        if (!category) {
+          replaceSessionEntrySync(
+            { agentId: "main", sessionKey: exactRow.key },
+            { sessionId: exactRow.sessionId, updatedAt: 2, label: "Fresh exact description" },
+          );
+        }
+        exactRow.placement = placements.transition({
           sessionId: exactRow.sessionId,
-          label: "Fresh exact description",
-          placement: projectWorkerSessionPlacement(exactRow.placement),
-        }),
-      });
-      releaseBulk.resolve();
-      await bulk;
-      expect(projection.snapshot({ agentId: "main", key: bulkRow.key }).row?.placement).toEqual(
-        projectWorkerSessionPlacement(bulkRow.placement),
-      );
-    } finally {
-      releaseBulk.resolve();
-      await Promise.all(pending);
-      projection.dispose();
-      releaseForeground();
-    }
-  });
-});
+          from: "requested",
+          to: "provisioning",
+          expectedGeneration: exactRow.placement.generation,
+        });
+        reportPlacementTransition(undefined, exactRow.placement);
+        const sql = observeHostDataSql();
+        if (category) {
+          sessionChanges.emit({ sessionKey: exactRow.key, factsInvalidated: "category" });
+        }
+        const respond = vi.fn();
+        const description = Promise.resolve(
+          sessionByKeyReadHandlers["sessions.describe"]!({
+            req: { type: "req", id: exactRow.sessionId, method: "sessions.describe" },
+            params: { key: exactRow.key },
+            client: null,
+            context,
+            isWebchatConnect: () => false,
+            respond,
+          }),
+        );
+        pending.push(Promise.allSettled([description]));
+        const membership = category ? projection.prepareMembership() : Promise.resolve();
+        pending.push(Promise.allSettled([membership]));
+        try {
+          await withTestTimeout(
+            Promise.all([description, membership]),
+            2_000,
+            "Exact description waited for an unrelated bulk placement refresh",
+          );
+          if (category) {
+            expect(
+              projection.sharingTargetState({ agentId: "main", key: exactRow.key }),
+            ).toMatchObject({ status: "ready" });
+          }
+          expect(sql.queries).toEqual([]);
+        } finally {
+          sql.restore();
+        }
+        expect(respond).toHaveBeenCalledExactlyOnceWith(true, {
+          session: expect.objectContaining({
+            key: exactRow.key,
+            sessionId: exactRow.sessionId,
+            label: "Fresh exact description",
+            placement: projectWorkerSessionPlacement(exactRow.placement),
+          }),
+        });
+        releaseBulk.resolve();
+        await bulk;
+        expect(projection.snapshot({ agentId: "main", key: bulkRow.key }).row?.placement).toEqual(
+          projectWorkerSessionPlacement(bulkRow.placement),
+        );
+      } finally {
+        releaseBulk.resolve();
+        await Promise.all(pending);
+        projection.dispose();
+        releaseForeground();
+      }
+    });
+  },
+);
 
 it.each([false, true])(
   "preserves stored session ID spelling in placement facts (archived: %s)",

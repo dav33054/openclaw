@@ -73,6 +73,9 @@ export function createSessionRowMaterializer(owner: {
         if (accepted && !databaseFacts) {
           continue;
         }
+        if (!accepted && current?.unresolvedDatabaseFacts === "category") {
+          continue;
+        }
         const row =
           current && (accepted ? current : owner.acquireEntry(current, owner.readEntry(current)));
         if (row && isColdArchivedSessionRow(row) && !accepted) {
@@ -126,7 +129,13 @@ export function createSessionRowMaterializer(owner: {
           const row =
             current &&
             owner.acquireEntry(
-              databaseFacts ? { ...current, hasBoard: databaseFacts.hasBoard } : current,
+              databaseFacts
+                ? {
+                    ...current,
+                    hasBoard: databaseFacts.hasBoard,
+                    unresolvedDatabaseFacts: undefined,
+                  }
+                : current,
               databaseFacts?.entry,
             );
           if (owner.revision() !== revision) {
@@ -146,6 +155,62 @@ export function createSessionRowMaterializer(owner: {
       });
       refresh(ids, true);
     },
+  };
+}
+
+/** Resident capture and description never reacquire unresolved category facts on the host. */
+export function createSessionRowResidentReads(owner: {
+  isActive: () => boolean;
+  topologyPending: () => boolean;
+  prepare: () => boolean;
+  runAsOwner: <T>(read: () => T) => T;
+  config: () => records.Inputs["cfg"];
+  lookup: (query: records.Lookup) => records.Row | undefined;
+  dirty: ReadonlySet<string>;
+  acquire: (row: records.Row) => records.Row | undefined;
+  materializePrivate: (row: records.Row) => void;
+  refresh: (ids: readonly string[]) => void;
+  archive: (row: records.Row | undefined) => records.Row | undefined;
+  isCurrent: (row: records.Row) => boolean;
+  present: (row: records.MaterializedRow) => void;
+}) {
+  return {
+    capture: (query: records.Lookup) => {
+      if (!owner.isActive()) {
+        return undefined;
+      }
+      const row = owner.lookup(query);
+      // Queued events retain the last published identity while topology prepares.
+      return row &&
+        row.unresolvedDatabaseFacts !== "category" &&
+        !owner.topologyPending() &&
+        owner.dirty.has(records.identity(row))
+        ? (owner.acquire(row) ?? row)
+        : row;
+    },
+    describe: (query: records.Lookup, captured?: records.Row) =>
+      owner.runAsOwner(() => {
+        if (!owner.isActive() || !owner.prepare()) {
+          return undefined;
+        }
+        let row = owner.lookup(query);
+        if (row && isIncognitoSessionKey(row.key)) {
+          owner.materializePrivate(row);
+        } else {
+          if (row && owner.dirty.has(records.identity(row))) {
+            // Keyed reads refresh only their owner, never unrelated bulk work.
+            owner.refresh([records.identity(row)]);
+            row = owner.lookup(query);
+          }
+          row = owner.archive(row);
+        }
+        if ((captured && !owner.isCurrent(captured)) || !records.ready(row)) {
+          return undefined;
+        }
+        row.materialized.source.cfg = owner.config();
+        owner.present(row);
+        return row;
+      }),
   };
 }
 

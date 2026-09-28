@@ -1,0 +1,227 @@
+import { afterEach, expect, it, vi } from "vitest";
+import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
+import { replaceSessionEntrySync } from "../config/sessions/session-accessor.js";
+import * as history from "../config/sessions/session-transcript-worker-runtime.js";
+import { MAX_SESSION_ROW_FACTS_KEYS } from "../config/sessions/session-transcript-worker.types.js";
+import { DEFAULT_WORKER_PENDING_TASKS } from "../infra/worker-task-capacity.js";
+import { sessionChanges } from "../sessions/session-row-changes.js";
+import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import { retainSessionListForegroundWork } from "./session-projection-work.js";
+import { SessionRowFactsPending, withReadySessionRows } from "./session-row-prepared-read.js";
+import { createSessionRowProjection } from "./session-row-projection.js";
+import { createWorkerSessionPlacementStore } from "./worker-environments/placement-store.js";
+
+afterEach(() => vi.restoreAllMocks());
+
+const cfg = { agents: { entries: { main: {} } } };
+
+it("reconciles more category rows than exact admission permits and survives archive eviction", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const count = DEFAULT_WORKER_PENDING_TASKS * MAX_SESSION_ROW_FACTS_KEYS + 1;
+    const queries = Array.from({ length: count }, (_, index) => ({
+      agentId: "main",
+      key: `agent:main:category-archive-${index}`,
+    }));
+    for (const query of queries) {
+      replaceSessionEntrySync(
+        { agentId: query.agentId, sessionKey: query.key },
+        { sessionId: query.key, updatedAt: 1, archivedAt: 1, category: "Work" },
+      );
+    }
+    const release = retainSessionListForegroundWork();
+    const projection = await createSessionRowProjection({ cfg, modelCatalog: [] }).catch(
+      (error: unknown) => {
+        release();
+        throw error;
+      },
+    );
+    let sql: ReturnType<typeof observeHostDataSql> | undefined;
+    try {
+      // The oldest of 101 retained archives must survive eviction as reconciliation work.
+      projection.setArchivePageSize(101);
+      await withReadySessionRows(
+        projection,
+        () => queries.slice(0, 101),
+        (read) => {
+          for (const query of queries.slice(0, 101)) {
+            expect(read.describe(query)?.entry.category).toBe("Work");
+          }
+        },
+      );
+      const oldest = queries[0]!;
+      expect(projection.capture(oldest)?.materialized).toBeDefined();
+      const admitted: string[][] = [];
+      const prepare = projection.withPreparedExactRows.bind(projection);
+      vi.spyOn(projection, "withPreparedExactRows").mockImplementation(
+        (select, consume, options) => {
+          const selected = select(cfg);
+          admitted.push(selected.map(({ key }) => key));
+          return prepare(
+            (config) => {
+              // Reentry must retain this admission slice instead of draining a live set.
+              expect(select(config)).toEqual(selected);
+              return selected;
+            },
+            consume,
+            options,
+          );
+        },
+      );
+      const reads: string[][] = [];
+      const readDatabases = history.withSessionHistoryWorkerDatabases;
+      vi.spyOn(history, "withSessionHistoryWorkerDatabases").mockImplementation(
+        (databases, consume, lane) =>
+          readDatabases(
+            databases,
+            (owners) =>
+              consume(
+                owners.map((owner) => ({
+                  ...owner,
+                  async readRowFacts(input) {
+                    reads.push([...input.sessionKeys]);
+                    return owner.readRowFacts(input);
+                  },
+                })),
+              ),
+            lane,
+          ),
+      );
+      sql = observeHostDataSql();
+      sessionChanges.emitBatch(
+        queries.map((query) => ({
+          sessionKey: query.key,
+          factsInvalidated: "category" as const,
+        })),
+      );
+      projection.setArchivePageSize(100);
+      expect(projection.capture(oldest)?.materialized).toBeUndefined();
+      expect(projection.sharingTargetState(oldest)).toEqual({ status: "pending" });
+      expect(() => projection.selectEntries({ key: oldest.key })).toThrow(SessionRowFactsPending);
+      await projection.prepareMembership();
+      expect(projection.needsMembershipPreparation()).toBe(false);
+      expect(admitted.length).toBeGreaterThan(0);
+      expect(admitted.every((keys) => keys.length <= MAX_SESSION_ROW_FACTS_KEYS)).toBe(true);
+      expect(reads.every((keys) => keys.length <= MAX_SESSION_ROW_FACTS_KEYS)).toBe(true);
+      // Cold exact materialization may reread metadata already accepted by bulk preparation.
+      expect([...new Set(reads.flat())].toSorted()).toEqual(
+        queries.map(({ key }) => key).toSorted(),
+      );
+      for (const query of queries) {
+        expect(projection.sharingTargetState(query)).toMatchObject({ status: "ready" });
+        expect(projection.capture(query)?.sharingEntry?.category).toBe("Work");
+      }
+      expect(sql.queries).toEqual([]);
+    } finally {
+      await projection.ensureMaterialized().catch(() => undefined);
+      sql?.restore();
+      projection.dispose();
+      release();
+    }
+  });
+});
+
+it("keeps failed category facts pending and reenters selection through exact preparation", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const query = { agentId: "main", key: "agent:main:category-selection" };
+    const sibling = { agentId: "main", key: "agent:main:category-selection-sibling" };
+    for (const target of [query, sibling]) {
+      replaceSessionEntrySync(
+        { agentId: target.agentId, sessionKey: target.key },
+        { sessionId: target.key, updatedAt: 1, category: "Work" },
+      );
+    }
+    const placements = createWorkerSessionPlacementStore();
+    let publishCategory = false;
+    let selectionStarted = false;
+    let publishedAcrossAwait = false;
+    const release = retainSessionListForegroundWork();
+    const projection = await createSessionRowProjection({
+      cfg,
+      modelCatalog: [],
+      placementFactsReader: {
+        async readProjection(ids) {
+          const reply = await placements.readProjection(ids);
+          if (publishCategory) {
+            expect(selectionStarted).toBe(true);
+            publishCategory = false;
+            publishedAcrossAwait = true;
+            sessionChanges.emitBatch(
+              [query, sibling].map(({ key }) => ({
+                sessionKey: key,
+                factsInvalidated: "category" as const,
+              })),
+            );
+          }
+          return reply;
+        },
+      },
+    }).catch((error: unknown) => {
+      release();
+      throw error;
+    });
+    let sql: ReturnType<typeof observeHostDataSql> | undefined;
+    try {
+      await projection.ensureMaterialized();
+      const failure = new Error("category row read failed");
+      const readDatabases = history.withSessionHistoryWorkerDatabases;
+      const reads: string[][] = [];
+      vi.spyOn(history, "withSessionHistoryWorkerDatabases").mockImplementation(
+        (databases, consume, lane) =>
+          readDatabases(
+            databases,
+            (owners) =>
+              consume(
+                owners.map((owner) => ({
+                  ...owner,
+                  async readRowFacts(input) {
+                    const reply = await owner.readRowFacts(input);
+                    reads.push([...input.sessionKeys]);
+                    if (reads.length === 1) {
+                      throw failure;
+                    }
+                    return reply;
+                  },
+                })),
+              ),
+            lane,
+          ),
+      );
+      sql = observeHostDataSql();
+      sessionChanges.emit({ sessionKey: query.key, factsInvalidated: "category" });
+      await expect(projection.prepareMembership()).rejects.toBe(failure);
+      expect(reads).toEqual([[query.key]]);
+      expect(projection.sharingTargetState(query)).toEqual({ status: "pending" });
+      expect(projection.needsMembershipPreparation()).toBe(true);
+      // A new caller may retry; the failed request itself never reschedules.
+      await projection.prepareMembership();
+      expect(reads).toHaveLength(2);
+      publishCategory = true;
+      sessionChanges.emit({ all: true, scope: "worker-placements" });
+      const selected = await withReadySessionRows(
+        projection,
+        () => {
+          selectionStarted = true;
+          return projection.selectEntries({ agentId: "main" }).map((row) => ({
+            agentId: row.agentId,
+            key: row.key,
+            storePath: row.storeTarget.storePath,
+          }));
+        },
+        (read) => [query, sibling].map((target) => read.describe(target)?.entry),
+      );
+      expect(selected).toMatchObject(
+        [query, sibling].map(({ key }) => ({ sessionId: key, category: "Work" })),
+      );
+      expect(publishedAcrossAwait).toBe(true);
+      expect(reads).toHaveLength(3);
+      expect(reads[2]?.toSorted()).toEqual([query.key, sibling.key].toSorted());
+      expect(projection.needsMembershipPreparation()).toBe(false);
+      expect(sql.queries).toEqual([]);
+    } finally {
+      await projection.ensureMaterialized().catch(() => undefined);
+      sql?.restore();
+      projection.dispose();
+      release();
+    }
+  });
+});

@@ -1,10 +1,12 @@
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
-import { listAgentIds } from "../agents/agent-scope-config.js";
+import { listAgentIds, withAgentRosterFactsBatch } from "../agents/agent-scope-config.js";
 import { resolveGatewaySessionStoreTargets } from "../config/sessions/combined-store-gateway.js";
 import type { GatewaySessionStoreDiscovery } from "../config/sessions/combined-store-paths.js";
+import { MAX_SESSION_ROW_FACTS_KEYS } from "../config/sessions/session-transcript-worker.types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
+import { SessionRowFactsPending } from "./session-row-prepared-read.js";
 import * as records from "./session-row-projection-record.js";
 
 type SessionRowScopeTarget = {
@@ -162,6 +164,27 @@ export function prepareSessionRowScopes(
   };
 }
 
+/** Selection reenters worker preparation if category facts change across an await. */
+export function createSessionRowEntrySelection(owner: {
+  isActive: () => boolean;
+  prepare: () => boolean;
+  runAsOwner: <T>(read: () => T) => T;
+  read: () => Parameters<typeof selectSessionRowEntries>[0];
+}) {
+  return (query: records.Query = {}) => {
+    if (!owner.isActive()) {
+      return [];
+    }
+    return owner.runAsOwner(() => {
+      if (!owner.prepare()) {
+        throw new Error("Session row topology changed; prepare current facts before reading");
+      }
+      const state = owner.read();
+      return withAgentRosterFactsBatch(state.cfg, () => selectSessionRowEntries(state, query));
+    });
+  };
+}
+
 /** Select metadata before federation, visibility, and reader-only materialization. */
 export function selectSessionRowEntries(
   params: {
@@ -203,7 +226,9 @@ export function selectSessionRowEntries(
     // Broad publications can change IDs before the resident index has caught up.
     for (const id of dirty) {
       const row = rows.get(id);
-      if (row && matches(row)) {
+      // Category cannot change an ID; unrelated uncertain categories do not
+      // participate in the structural refresh needed to resolve this lookup.
+      if (row && row.unresolvedDatabaseFacts !== "category" && matches(row)) {
         acquire(row);
       }
     }
@@ -216,6 +241,20 @@ export function selectSessionRowEntries(
     : parent
       ? [...children].map((id) => rows.get(id))
       : matching(query);
+  const pending: records.Lookup[] = [];
+  for (const row of candidates) {
+    if (row?.unresolvedDatabaseFacts === "category" && matches(row)) {
+      pending.push({ agentId: row.agentId, key: row.key, storePath: row.storeTarget.storePath });
+      if (pending.length === MAX_SESSION_ROW_FACTS_KEYS) {
+        break;
+      }
+    }
+  }
+  // Cold archives may no longer be display-dirty. Their retained uncertainty
+  // still requires bounded worker preparation before category-based selection.
+  if (pending.length > 0) {
+    throw new SessionRowFactsPending(pending);
+  }
   const acquired =
     sessionIdOrKey || dirty.size === 0
       ? candidates
