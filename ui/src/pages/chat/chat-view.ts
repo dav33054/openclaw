@@ -411,7 +411,7 @@ export function renderChat(props: ChatProps) {
     ...props,
     asyncQuestions,
     displayQueue: [
-      ...buildPendingInputQueueItems(inputDisplay.queuedInputs),
+      ...buildPendingInputQueueItems(inputDisplay.queuedInputs, pendingInputs?.steeringRunIds),
       ...inputDisplay.queue,
     ],
     footerContent,
