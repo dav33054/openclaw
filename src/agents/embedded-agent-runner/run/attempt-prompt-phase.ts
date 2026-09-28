@@ -1,4 +1,3 @@
-/** Runs prompt assembly, admission, submission, and prompt-local recovery. */
 import { formatErrorMessage } from "../../../infra/errors.js";
 import {
   mergeAgentRunAttemptTerminal,
@@ -315,7 +314,6 @@ export async function runEmbeddedAttemptPromptPhase(
         imageCount: imageResult.images.length,
         llmBoundaryPromptForPrecheck: promptContext.llmBoundaryPromptForPrecheck,
         promptForModel: promptContext.promptForModel,
-        promptSubmissionRuntimeOnly: promptContext.promptSubmission.runtimeOnly,
         reserveTokens,
         sessionMessages: activeSession.messages,
         skipPromptSubmission,

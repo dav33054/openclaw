@@ -23,8 +23,10 @@ import { buildDashboardSessionTitleSource } from "../dashboard-session-title.js"
 import { ADMIN_SCOPE, authorizeOperatorScopesForRequiredScope } from "../method-scopes.js";
 import { ModelAccountConnectAuthorityError } from "../model-account-connect.js";
 import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
+import { startSessionCreateDiagnostics } from "../session-create-diagnostics.js";
+import { buildDashboardSessionKey } from "../session-create-key.js";
 import { resolveSessionCreateCatalogSelectionError } from "../session-create-model-selection.js";
-import { buildDashboardSessionKey, createGatewaySession } from "../session-create-service.js";
+import { createGatewaySession } from "../session-create-service.js";
 import type { PreparedGatewaySessionLifecycle } from "../session-create-service.types.js";
 import { resolveRequestedSessionAgentId as resolveRequestedGlobalAgentId } from "../session-request-agent.js";
 import {
@@ -36,6 +38,7 @@ import {
   validateSessionWorktreeSelection,
 } from "../session-worktree-preparation.js";
 import { prepareSkillLibrarySessionCreation } from "../skill-library-session.js";
+import { gatewayClientUploadPolicyError } from "../upload-policy.js";
 import { createAgentRuntimeAuthorityGuard } from "./agent-runtime-authority.js";
 import { scheduleCreatedDashboardSessionTitle } from "./chat-send-background.js";
 import { handleDirectExternalChatSend } from "./chat-send-external-entry.js";
@@ -72,6 +75,7 @@ import { resolveWorkspacePathContainment } from "./workspace-path-containment.js
 
 export const sessionCreateHandlers: GatewayRequestHandlers = {
   "sessions.create": idempotentSessionCreate(async (options) => {
+    using diagnostics = startSessionCreateDiagnostics();
     const {
       params,
       respond,
@@ -82,6 +86,16 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       hasCurrentClientAuthority,
     } = options;
     if (!assertValidParams(params, validateSessionsCreateParams, "sessions.create", respond)) {
+      return;
+    }
+    const uploadError = gatewayClientUploadPolicyError({
+      method: "sessions.create",
+      requestParams: params,
+      client,
+      context,
+    });
+    if (uploadError) {
+      respond(false, undefined, uploadError);
       return;
     }
     const p = structuredClone(params);
@@ -116,9 +130,9 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       return;
     }
     const requestedModel = normalizeOptionalString(p.model);
-    let personalAccounts: ReturnType<typeof prepareSessionModelAccountAccess>;
+    let personalAccounts: Awaited<ReturnType<typeof prepareSessionModelAccountAccess>>;
     try {
-      personalAccounts = prepareSessionModelAccountAccess(options, requestedModel);
+      personalAccounts = await prepareSessionModelAccountAccess(options, requestedModel);
     } catch (error) {
       if (!(error instanceof ModelAccountConnectAuthorityError)) {
         throw error;
@@ -484,6 +498,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
     const createParams: Parameters<typeof createGatewaySession>[0] = {
       cfg,
       getCurrentConfig,
+      onPhase: diagnostics?.mark,
       operatorAuthority: operatorCapture.preparation,
       key: sessionKey,
       agentId: sessionAgentId,
@@ -628,6 +643,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
         cached: runMeta?.cached === true,
       });
 
+    diagnostics?.mark("response");
     respond(true, {
       ok: true,
       key: created.key,
@@ -639,6 +655,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       resolved: created.resolved,
       ...(createdWorktree ? { worktree: createdWorktree } : {}),
     });
+    diagnostics?.mark("handlerExit");
     emitSessionsChanged(context, {
       sessionKey: created.key,
       agentId: created.agentId,
