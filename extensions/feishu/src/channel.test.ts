@@ -57,6 +57,9 @@ const sendCardFeishuMock = vi.hoisted(() => vi.fn());
 const sendMessageFeishuMock = vi.hoisted(() => vi.fn());
 const sendStickerFeishuMock = vi.hoisted(() => vi.fn());
 const getMessageFeishuMock = vi.hoisted(() => vi.fn());
+const resolveFeishuReplyAnchorMessageIdMock = vi.hoisted(() =>
+  vi.fn(async ({ threadId }: { threadId?: string | null }) => threadId ?? undefined),
+);
 const editMessageFeishuMock = vi.hoisted(() => vi.fn());
 const createPinFeishuMock = vi.hoisted(() => vi.fn());
 const listPinsFeishuMock = vi.hoisted(() => vi.fn());
@@ -107,6 +110,7 @@ vi.mock("./channel.runtime.js", () => ({
     assertFeishuChatMember: assertFeishuChatMemberMock,
     getFeishuMemberInfo: getFeishuMemberInfoMock,
     getMessageFeishu: getMessageFeishuMock,
+    resolveFeishuReplyAnchorMessageId: resolveFeishuReplyAnchorMessageIdMock,
     listFeishuDirectoryGroupsLive: listFeishuDirectoryGroupsLiveMock,
     listFeishuDirectoryPeersLive: listFeishuDirectoryPeersLiveMock,
     listPinsFeishu: listPinsFeishuMock,
@@ -839,7 +843,7 @@ describe("feishuPlugin actions", () => {
     },
   );
 
-  it("anchors an agent-initiated send to the session topic when the turn has no inbound message", async () => {
+  it("resolves a topic session key to the topic's reply anchor for agent-initiated sends", async () => {
     const stickerCfg = {
       channels: {
         feishu: {
@@ -850,6 +854,7 @@ describe("feishuPlugin actions", () => {
       },
     } satisfies OpenClawConfig;
     sendStickerFeishuMock.mockResolvedValueOnce({ messageId: "om_sticker", chatId: "oc_group_1" });
+    resolveFeishuReplyAnchorMessageIdMock.mockResolvedValueOnce("om_topic_root");
     await feishuPlugin.actions!.handleAction!({
       channel: "feishu",
       action: "sticker",
@@ -857,15 +862,19 @@ describe("feishuPlugin actions", () => {
       cfg: stickerCfg,
       accountId: "work",
       // No inbound message id: heartbeats and scheduled turns look exactly like this.
-      sessionKey: "feishu:group:oc_group_1:topic:om_topic_root",
+      sessionKey: "feishu:group:oc_group_1:topic:omt_topic_root",
       toolContext: { currentChannelId: "oc_group_1" },
     });
+    // A reply addresses a message, so the topic id (`omt_…`) must be resolved first.
+    expect(resolveFeishuReplyAnchorMessageIdMock).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: "omt_topic_root" }),
+    );
     expect(sendStickerFeishuMock).toHaveBeenCalledWith(
       expect.objectContaining({ replyToMessageId: "om_topic_root", replyInThread: true }),
     );
   });
 
-  it("never addresses a bare topic id as a reply target", async () => {
+  it("keeps an agent-initiated send top-level when the topic cannot be resolved", async () => {
     const stickerCfg = {
       channels: {
         feishu: {
@@ -876,6 +885,7 @@ describe("feishuPlugin actions", () => {
       },
     } satisfies OpenClawConfig;
     sendStickerFeishuMock.mockResolvedValueOnce({ messageId: "om_sticker", chatId: "oc_group_1" });
+    resolveFeishuReplyAnchorMessageIdMock.mockResolvedValueOnce(undefined);
     await feishuPlugin.actions!.handleAction!({
       channel: "feishu",
       action: "sticker",
@@ -885,7 +895,6 @@ describe("feishuPlugin actions", () => {
       sessionKey: "feishu:group:oc_group_1:topic:omt_topic_root",
       toolContext: { currentChannelId: "oc_group_1" },
     });
-    // `omt_` identifies a topic; only a message id can address a Feishu reply.
     expect(sendStickerFeishuMock).toHaveBeenCalledWith(
       expect.objectContaining({ replyToMessageId: undefined, replyInThread: false }),
     );

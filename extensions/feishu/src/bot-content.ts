@@ -12,7 +12,7 @@ import { saveMessageResourceFeishu } from "./media.js";
 import { isFeishuBroadcastMention } from "./mention.js";
 import { formatFeishuMediaContent } from "./message-content.js";
 import { parsePostContent } from "./post.js";
-import type { FeishuChatType, FeishuMediaInfo } from "./types.js";
+import type { FeishuMediaInfo } from "./types.js";
 
 type FeishuMention = NonNullable<FeishuMessageEvent["message"]["mentions"]>[number];
 
@@ -34,8 +34,6 @@ export function resolveFeishuGroupSession(params: {
   messageId: string;
   rootId?: string;
   threadId?: string;
-  topicRootMessageId?: string;
-  chatType?: FeishuChatType;
   groupConfig?: {
     groupSessionScope?: GroupSessionScope;
     topicSessionMode?: "enabled" | "disabled";
@@ -47,38 +45,21 @@ export function resolveFeishuGroupSession(params: {
     replyInThread?: "enabled" | "disabled";
   };
 }): ResolvedFeishuGroupSession {
-  const {
-    chatId,
-    senderOpenId,
-    messageId,
-    rootId,
-    threadId,
-    topicRootMessageId,
-    chatType,
-    groupConfig,
-    feishuCfg,
-  } = params;
+  const { chatId, senderOpenId, messageId, rootId, threadId, groupConfig, feishuCfg } = params;
   const normalizedThreadId = threadId?.trim();
   const normalizedRootId = rootId?.trim();
-  const normalizedTopicRootMessageId = topicRootMessageId?.trim();
   const threadReply = Boolean(normalizedThreadId || normalizedRootId);
   const replyInThread =
     (groupConfig?.replyInThread ?? feishuCfg?.replyInThread ?? "disabled") === "enabled" ||
     threadReply;
   const groupSessionScope = resolveConfiguredFeishuGroupSessionScope({ groupConfig, feishuCfg });
-  const normalizedTopicGroupThreadId =
-    chatType === "topic_group" ? (normalizedThreadId ?? normalizedRootId) : undefined;
-  // A topic's messages must share one session even though providers report different ids for
-  // them: thread_id identifies the topic, while a quote reply's root_id points at the quoted
-  // message. The resolved topic root wins so both shapes land on the same key, which also stays
-  // usable as a reply anchor because Feishu replies address a message, not a topic.
+  // thread_id is the topic's durable identity: every message inside a topic reports it, while
+  // root_id can point at the quoted message (and is absent for a topic's first message). Keying
+  // on root_id first split one topic into two sessions; resolving it from the provider instead
+  // would make the key depend on a lookup, which moved an existing session on failure.
   const topicScope =
     groupSessionScope === "group_topic" || groupSessionScope === "group_topic_sender"
-      ? (normalizedTopicRootMessageId ??
-        normalizedTopicGroupThreadId ??
-        normalizedRootId ??
-        normalizedThreadId ??
-        (replyInThread ? messageId : null))
+      ? (normalizedThreadId ?? normalizedRootId ?? (replyInThread ? messageId : null))
       : null;
 
   let peerId;

@@ -85,12 +85,7 @@ import { resolveFeishuReasoningPreviewEnabled } from "./reasoning-preview.js";
 import { shouldSendNoVisibleReplyFallback } from "./reply-delivery-result.js";
 import { createFeishuReplyDispatcher } from "./reply-dispatcher.js";
 import { getFeishuRuntime } from "./runtime.js";
-import {
-  getMessageFeishu,
-  listFeishuThreadMessages,
-  resolveFeishuTopicRootMessageId,
-  sendMessageFeishu,
-} from "./send.js";
+import { getMessageFeishu, listFeishuThreadMessages, sendMessageFeishu } from "./send.js";
 import { getFeishuSyntheticDirectPreDispatchTarget } from "./synthetic-event-target.js";
 import {
   isFeishuGroupChatType,
@@ -516,17 +511,6 @@ export async function handleFeishuMessage(params: {
       ? (groupConfig?.allowFrom ?? [])
       : (feishuCfg?.groupSenderAllowFrom ?? [])
     : [];
-  // Topic messages must share one session, but a quote reply reports the quoted message as
-  // root_id while thread_id is the only stable topic identifier. Resolving the topic root keeps
-  // both shapes on one key and keeps that key usable as a reply anchor.
-  const topicRootMessageId =
-    isGroup && effectiveThreadId && isFeishuTopicSessionScope(groupSessionScope ?? "group")
-      ? await resolveFeishuTopicRootMessageId({
-          cfg,
-          topicId: effectiveThreadId,
-          accountId: account.accountId,
-        })
-      : undefined;
   const groupSession = isGroup
     ? resolveFeishuGroupSession({
         chatId: ctx.chatId,
@@ -534,8 +518,6 @@ export async function handleFeishuMessage(params: {
         messageId: ctx.messageId,
         rootId: ctx.rootId,
         threadId: effectiveThreadId,
-        topicRootMessageId,
-        chatType: ctx.chatType,
         groupConfig,
         feishuCfg,
       })

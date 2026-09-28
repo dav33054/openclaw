@@ -13,12 +13,7 @@ import {
 } from "./bot.test-support.js";
 import { setFeishuRuntime } from "./runtime.js";
 
-const {
-  mockGetMessageFeishu,
-  mockDispatchReply,
-  mockResolveAgentRoute,
-  mockResolveFeishuTopicRootMessageId,
-} = vi.hoisted(() => ({
+const { mockGetMessageFeishu, mockDispatchReply, mockResolveAgentRoute } = vi.hoisted(() => ({
   mockGetMessageFeishu: vi.fn<typeof import("./send.js").getMessageFeishu>(),
   mockDispatchReply: vi
     .fn<PluginRuntime["channel"]["reply"]["dispatchReplyWithBufferedBlockDispatcher"]>()
@@ -26,15 +21,11 @@ const {
   mockResolveAgentRoute: vi.fn<PluginRuntime["channel"]["routing"]["resolveAgentRoute"]>(() =>
     createFeishuTestRoute(),
   ),
-  mockResolveFeishuTopicRootMessageId: vi.fn<
-    typeof import("./send.js").resolveFeishuTopicRootMessageId
-  >(async () => undefined),
 }));
 
 vi.mock("./send.js", () => ({
   getMessageFeishu: mockGetMessageFeishu,
   listFeishuThreadMessages: vi.fn().mockResolvedValue([]),
-  resolveFeishuTopicRootMessageId: mockResolveFeishuTopicRootMessageId,
   sendMessageFeishu: vi.fn(),
 }));
 vi.mock("./reply-dispatcher.js", () => ({
@@ -313,7 +304,6 @@ describe("Feishu topic session keys", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetMessageFeishu.mockReset().mockResolvedValue(null);
-    mockResolveFeishuTopicRootMessageId.mockReset().mockResolvedValue(undefined);
     setFeishuRuntime(
       createPluginRuntimeMock({
         config: { current: () => currentRuntimeConfig },
@@ -343,11 +333,19 @@ describe("Feishu topic session keys", () => {
       return peer?.id;
     });
 
-  it("keys a quoted topic reply to the same session as the topic starter", async () => {
-    // Feishu reports thread_id on every message of a topic, and a quote reply's root_id points
-    // at the quoted message, so only the topic's root message can key the session.
-    mockResolveFeishuTopicRootMessageId.mockResolvedValue("om_topic_starter_message");
+  it("keys every message of a topic to the topic id, including quote replies", async () => {
+    // Feishu reports thread_id on every message of a topic, while a quote reply's root_id points
+    // at the quoted message. Keying on root_id first split one topic into two sessions.
     const cfg = topicCfg();
+    // The quoted-message lookup must not be able to move the session.
+    mockGetMessageFeishu.mockResolvedValue({
+      messageId: "om_mid_topic_message",
+      chatId: "oc-group",
+      chatType: "topic_group",
+      content: "quoted",
+      contentType: "text",
+      threadId: "omt_some_other_topic",
+    });
 
     await dispatchMessage({
       cfg,
@@ -373,15 +371,13 @@ describe("Feishu topic session keys", () => {
     });
 
     expect(routedPeerIds()).toEqual([
-      "oc-group:topic:om_topic_starter_message",
-      "oc-group:topic:om_topic_starter_message",
+      "oc-group:topic:omt_topic_quote",
+      "oc-group:topic:omt_topic_quote",
     ]);
-    expect(mockResolveFeishuTopicRootMessageId).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps the provider topic key when the topic root cannot be resolved", async () => {
-    mockResolveFeishuTopicRootMessageId.mockResolvedValue(undefined);
-
+  it("keeps the topic id as the session key for a topic starter", async () => {
+    // Existing topic sessions are stored under this key, so it must stay the topic id.
     await dispatchMessage({
       cfg: topicCfg(),
       event: createFeishuTestEvent({

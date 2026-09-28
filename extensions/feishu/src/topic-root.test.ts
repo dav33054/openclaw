@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClawdbotConfig } from "../runtime-api.js";
-import { resolveFeishuTopicRootMessageId } from "./send.js";
+import { resolveFeishuReplyAnchorMessageId, resolveFeishuTopicRootMessageId } from "./send.js";
 
 const { mockListMessages } = vi.hoisted(() => ({ mockListMessages: vi.fn() }));
 
@@ -64,5 +64,39 @@ describe("resolveFeishuTopicRootMessageId", () => {
     await expect(
       resolveFeishuTopicRootMessageId({ cfg, topicId: "omt_empty" }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("resolveFeishuReplyAnchorMessageId", () => {
+  beforeEach(() => {
+    mockListMessages.mockReset();
+  });
+
+  it("passes a message id through without a lookup", async () => {
+    await expect(
+      resolveFeishuReplyAnchorMessageId({ cfg, threadId: " om_reply_target " }),
+    ).resolves.toBe("om_reply_target");
+    await expect(resolveFeishuReplyAnchorMessageId({ cfg })).resolves.toBeUndefined();
+
+    expect(mockListMessages).not.toHaveBeenCalled();
+  });
+
+  it("resolves a topic id to the message a reply can address", async () => {
+    mockListMessages.mockResolvedValue({
+      code: 0,
+      data: { items: [{ message_id: "om_topic_root" }] },
+    });
+
+    await expect(
+      resolveFeishuReplyAnchorMessageId({ cfg, threadId: "omt_topic", accountId: "work" }),
+    ).resolves.toBe("om_topic_root");
+    expect(mockListMessages).toHaveBeenCalledWith({
+      params: {
+        container_id_type: "thread",
+        container_id: "omt_topic",
+        sort_type: "ByCreateTimeAsc",
+        page_size: 1,
+      },
+    });
   });
 });

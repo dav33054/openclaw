@@ -12,7 +12,6 @@ const sendCardFeishuMock = vi.hoisted(() => vi.fn());
 
 vi.mock("./send.js", () => ({
   sendCardFeishu: sendCardFeishuMock,
-  resolveFeishuTopicRootMessageId: vi.fn().mockResolvedValue(undefined),
 }));
 
 describe("feishu quick-action launcher", () => {

@@ -499,6 +499,35 @@ export async function resolveFeishuTopicRootMessageId(params: {
   return rootMessageId;
 }
 
+/**
+ * Turns the thread identity a channel target carries into a reply anchor.
+ *
+ * A Feishu reply addresses a message, so a target that names a topic (`omt_…`) needs the topic's
+ * root message; a target that already names a message is returned unchanged and costs no lookup.
+ */
+export async function resolveFeishuReplyAnchorMessageId(params: {
+  cfg: ClawdbotConfig;
+  threadId?: string | null;
+  accountId?: string;
+}): Promise<string | undefined> {
+  const threadId = params.threadId?.trim();
+  if (!threadId) {
+    return undefined;
+  }
+  if (!isFeishuTopicId(threadId)) {
+    return threadId;
+  }
+  return await resolveFeishuTopicRootMessageId({
+    cfg: params.cfg,
+    topicId: threadId,
+    accountId: params.accountId,
+  });
+}
+
+function isFeishuTopicId(value: string): boolean {
+  return value.startsWith("omt_");
+}
+
 type SendFeishuMessageParams = {
   cfg: ClawdbotConfig;
   to: string;

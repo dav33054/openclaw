@@ -222,7 +222,6 @@ const {
   mockSendMessageFeishu,
   mockGetMessageFeishu,
   mockListFeishuThreadMessages,
-  mockResolveFeishuTopicRootMessageId,
   mockDownloadMessageResourceFeishu,
   mockCreateFeishuClient,
   mockResolveAgentRoute,
@@ -249,7 +248,6 @@ const {
   mockSendMessageFeishu: vi.fn().mockResolvedValue({ messageId: "pairing-msg", chatId: "oc-dm" }),
   mockGetMessageFeishu: vi.fn().mockResolvedValue(null),
   mockListFeishuThreadMessages: vi.fn().mockResolvedValue([]),
-  mockResolveFeishuTopicRootMessageId: vi.fn().mockResolvedValue(undefined),
   mockDownloadMessageResourceFeishu: vi.fn().mockResolvedValue({
     saved: {
       id: "inbound-clip.mp4",
@@ -341,7 +339,6 @@ vi.mock("./send.js", () => ({
   sendMessageFeishu: mockSendMessageFeishu,
   getMessageFeishu: mockGetMessageFeishu,
   listFeishuThreadMessages: mockListFeishuThreadMessages,
-  resolveFeishuTopicRootMessageId: mockResolveFeishuTopicRootMessageId,
 }));
 
 vi.mock("./media.js", () => ({
@@ -906,7 +903,6 @@ describe("handleFeishuMessage command authorization", () => {
     mockShouldComputeCommandAuthorized.mockReset().mockReturnValue(true);
     mockGetMessageFeishu.mockReset().mockResolvedValue(null);
     mockListFeishuThreadMessages.mockReset().mockResolvedValue([]);
-    mockResolveFeishuTopicRootMessageId.mockReset().mockResolvedValue(undefined);
     mockReadSessionUpdatedAt.mockReturnValue(undefined);
     mockResolveStorePath.mockReturnValue("/tmp/feishu-sessions.json");
     mockResolveConfiguredBindingRoute
@@ -2524,14 +2520,14 @@ describe("handleFeishuMessage command authorization", () => {
       expectedParentPeer: { kind: "group" as const, id: "oc-group" },
     },
     {
-      name: "keeps root_id as topic key when root_id and thread_id both exist",
+      name: "prefers thread_id over root_id when both exist",
       groupConfig: { groupSessionScope: "group_topic_sender" as const },
       messageId: "msg-scope-topic-thread-id",
       senderOpenId: "ou-topic-user",
       message: { root_id: "om_root_topic", thread_id: "omt_topic_1" },
       expectedPeer: {
         kind: "group" as const,
-        id: "oc-group:topic:om_root_topic:sender:ou-topic-user",
+        id: "oc-group:topic:omt_topic_1:sender:ou-topic-user",
       },
       expectedParentPeer: { kind: "group" as const, id: "oc-group" },
     },
@@ -2557,12 +2553,12 @@ describe("handleFeishuMessage command authorization", () => {
       expectedParentPeer: { kind: "group" as const, id: "oc-group" },
     },
     {
-      name: "maps legacy topicSessionMode=enabled to root_id when both root_id and thread_id exist",
+      name: "maps legacy topicSessionMode=enabled to thread_id when both root_id and thread_id exist",
       accountConfig: { topicSessionMode: "enabled" as const },
       messageId: "msg-legacy-topic-thread-id",
       senderOpenId: "ou-legacy-thread-id",
       message: { root_id: "om_root_legacy", thread_id: "omt_topic_legacy" },
-      expectedPeer: { kind: "group" as const, id: "oc-group:topic:om_root_legacy" },
+      expectedPeer: { kind: "group" as const, id: "oc-group:topic:omt_topic_legacy" },
       expectedParentPeer: { kind: "group" as const, id: "oc-group" },
     },
     {
@@ -2672,7 +2668,7 @@ describe("handleFeishuMessage command authorization", () => {
     expectResolvedRouteCall(1, expectedPeer, expectedParentPeer);
   });
 
-  it("keeps topic session key stable after first turn creates a thread", async () => {
+  it("keeps one topic session when every topic message carries the topic id", async () => {
     mockShouldComputeCommandAuthorized.mockReturnValue(false);
 
     const cfg = createFeishuTestConfig({
@@ -2689,7 +2685,8 @@ describe("handleFeishuMessage command authorization", () => {
       senderOpenId: "ou-topic-init",
       chatId: "oc-group",
       chatType: "group",
-      text: "create topic",
+      text: "topic starter",
+      message: { thread_id: "omt_topic_created" },
     });
     const secondTurn = createFeishuTestEvent({
       messageId: "msg-topic-second",
@@ -2703,8 +2700,45 @@ describe("handleFeishuMessage command authorization", () => {
     await dispatchMessage({ cfg, event: firstTurn });
     await dispatchMessage({ cfg, event: secondTurn });
 
-    expectResolvedRouteCall(0, { kind: "group", id: "oc-group:topic:msg-topic-first" });
-    expectResolvedRouteCall(1, { kind: "group", id: "oc-group:topic:msg-topic-first" });
+    expectResolvedRouteCall(0, { kind: "group", id: "oc-group:topic:omt_topic_created" });
+    expectResolvedRouteCall(1, { kind: "group", id: "oc-group:topic:omt_topic_created" });
+  });
+
+  it("keeps a message that precedes its topic on the message key", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+
+    // Only when the bot's own threaded reply creates the topic does the first message arrive
+    // without a topic id: it keeps its message key, and later topic messages use the topic id.
+    const cfg = createFeishuTestConfig({
+      groups: {
+        "oc-group": {
+          requireMention: false,
+          groupSessionScope: "group_topic",
+          replyInThread: "enabled",
+        },
+      },
+    });
+    const preTopicTurn = createFeishuTestEvent({
+      messageId: "msg-pre-topic",
+      senderOpenId: "ou-topic-init",
+      chatId: "oc-group",
+      chatType: "group",
+      text: "message that creates the thread",
+    });
+    const topicTurn = createFeishuTestEvent({
+      messageId: "msg-in-created-topic",
+      senderOpenId: "ou-topic-init",
+      chatId: "oc-group",
+      chatType: "group",
+      text: "reply inside the created thread",
+      message: { root_id: "msg-pre-topic", thread_id: "omt_topic_from_reply" },
+    });
+
+    await dispatchMessage({ cfg, event: preTopicTurn });
+    await dispatchMessage({ cfg, event: topicTurn });
+
+    expectResolvedRouteCall(0, { kind: "group", id: "oc-group:topic:msg-pre-topic" });
+    expectResolvedRouteCall(1, { kind: "group", id: "oc-group:topic:omt_topic_from_reply" });
   });
 
   it("hydrates missing native topic thread_id before routing starter events", async () => {
