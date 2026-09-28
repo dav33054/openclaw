@@ -1,7 +1,25 @@
-import type { ActiveMemoryEscalationProvider } from "openclaw/plugin-sdk/active-memory-escalation-runtime";
 import type { ActiveMemoryMode } from "./types.js";
 
-export const ACTIVE_MEMORY_ESCALATION_PROVIDER_TIMEOUT_MS = 100;
+/**
+ * Upper bound for one escalation decision. The hook preflight budget can
+ * lower it further; an overdue answer never replaces the built-in matcher.
+ */
+export const ACTIVE_MEMORY_ESCALATION_DECISION_TIMEOUT_MS = 1_000;
+
+export type RecallEscalationDeciderResult = "recall" | "skip" | "abstain";
+
+/** Replaces only the built-in intent matcher for one escalate-mode turn. */
+export type RecallEscalationDecider = {
+  decide(params: {
+    /** Bounded projection of the latest user text. */
+    message: string;
+    /** Bounded search query; may add one prior user turn for short follow-ups. */
+    searchQuery: string;
+    signal: AbortSignal;
+    /** Remaining decision budget after the preflight reserve. */
+    timeoutMs: number;
+  }): RecallEscalationDeciderResult | Promise<RecallEscalationDeciderResult>;
+};
 
 const RECALL_INTENT_PATTERNS = [
   /\b(?:previously|earlier|last time|used to)\b/iu,
@@ -73,7 +91,7 @@ export type RecallEscalationDecision =
   | "mode-off"
   | "strong-lane-one-hit"
   | "no-recall-intent"
-  | "provider-skip";
+  | "decision-skip";
 
 export function resolveRecallEscalationDecision(params: {
   mode: ActiveMemoryMode;
@@ -92,35 +110,30 @@ export function resolveRecallEscalationDecision(params: {
   return hasRecallIntent(params.message) ? "recall" : "no-recall-intent";
 }
 
-type ActiveMemoryEscalationProviderFallbackReason =
-  | "abstain"
-  | "error"
-  | "invalid-result"
-  | "timeout";
+export type RecallEscalationFallbackReason = "abstain" | "error" | "invalid-result" | "timeout";
 
 /**
- * Gives an explicitly configured provider one decision deadline to replace the
- * built-in intent matcher. Cancellation is cooperative: synchronous plugin work
- * cannot be interrupted, but an overdue result never overrides the matcher.
+ * Gives an opted-in decider one bounded chance to replace the built-in intent
+ * matcher. An overdue, failed, invalid, or abstaining answer keeps the matcher.
  */
-export async function resolveRecallEscalationDecisionWithProvider(params: {
+export async function resolveRecallEscalationDecisionWithDecider(params: {
   mode: ActiveMemoryMode;
   /** Full message used only by the existing built-in matcher. */
   message: string;
-  /** Optional bounded projection exposed to the plugin provider. */
-  providerMessage?: string;
+  /** Optional bounded projection exposed to the decider. */
+  deciderMessage?: string;
   searchQuery: string;
   hasStrongLaneOneHit: boolean;
-  provider?: ActiveMemoryEscalationProvider;
+  decider?: RecallEscalationDecider;
   signal: AbortSignal;
   timeoutMs?: number;
-  onProviderFallback?: (reason: ActiveMemoryEscalationProviderFallbackReason) => void;
+  onDeciderFallback?: (reason: RecallEscalationFallbackReason) => void;
 }): Promise<RecallEscalationDecision> {
   const builtInDecision = resolveRecallEscalationDecision(params);
   if (
     params.mode !== "escalate" ||
     params.hasStrongLaneOneHit ||
-    !params.provider ||
+    !params.decider ||
     params.signal.aborted
   ) {
     return builtInDecision;
@@ -129,15 +142,15 @@ export async function resolveRecallEscalationDecisionWithProvider(params: {
   const timeoutMs = Math.max(
     1,
     Math.min(
-      ACTIVE_MEMORY_ESCALATION_PROVIDER_TIMEOUT_MS,
-      params.timeoutMs ?? ACTIVE_MEMORY_ESCALATION_PROVIDER_TIMEOUT_MS,
+      ACTIVE_MEMORY_ESCALATION_DECISION_TIMEOUT_MS,
+      params.timeoutMs ?? ACTIVE_MEMORY_ESCALATION_DECISION_TIMEOUT_MS,
     ),
   );
   const deadline = performance.now() + timeoutMs;
   const timeoutController = new AbortController();
   const timeout = setTimeout(() => timeoutController.abort(), timeoutMs);
   const signal = AbortSignal.any([params.signal, timeoutController.signal]);
-  const aborted = Symbol("active-memory-escalation-provider-aborted");
+  const aborted = Symbol("active-memory-escalation-decider-aborted");
   const abortPromise = new Promise<typeof aborted>((resolve) => {
     if (signal.aborted) {
       resolve(aborted);
@@ -147,33 +160,36 @@ export async function resolveRecallEscalationDecisionWithProvider(params: {
   });
 
   try {
-    const providerPromise = Promise.resolve(
-      params.provider.decide({
-        message: params.providerMessage ?? params.message,
+    const decisionPromise = Promise.resolve(
+      params.decider.decide({
+        message: params.deciderMessage ?? params.message,
         searchQuery: params.searchQuery,
         signal,
+        timeoutMs,
       }),
     );
-    const result = await Promise.race([providerPromise, abortPromise]);
+    // A late rejection after the race has settled must not surface as unhandled.
+    decisionPromise.catch(() => {});
+    const result = await Promise.race([decisionPromise, abortPromise]);
     if (result === aborted || signal.aborted || performance.now() >= deadline) {
       timeoutController.abort();
-      params.onProviderFallback?.("timeout");
+      params.onDeciderFallback?.("timeout");
       return builtInDecision;
     }
     if (result === "recall") {
       return "recall";
     }
     if (result === "skip") {
-      return "provider-skip";
+      return "decision-skip";
     }
     if (result === "abstain") {
-      params.onProviderFallback?.("abstain");
+      params.onDeciderFallback?.("abstain");
       return builtInDecision;
     }
-    params.onProviderFallback?.("invalid-result");
+    params.onDeciderFallback?.("invalid-result");
     return builtInDecision;
   } catch {
-    params.onProviderFallback?.("error");
+    params.onDeciderFallback?.("error");
     return builtInDecision;
   } finally {
     clearTimeout(timeout);

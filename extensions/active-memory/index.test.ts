@@ -76,7 +76,7 @@ const hoisted = vi.hoisted(() => {
     },
   };
   return {
-    getActiveMemoryEscalationProvider: vi.fn(),
+    evaluateDecision: vi.fn(),
     closeActiveMemorySearchManager: vi.fn(async () => {}),
     getActiveMemorySearchManager: vi.fn(async () => ({ manager: null })),
     cleanupSessionLifecycleArtifacts: vi.fn(),
@@ -94,10 +94,6 @@ const hoisted = vi.hoisted(() => {
     ),
   };
 });
-
-vi.mock("openclaw/plugin-sdk/active-memory-escalation-runtime", () => ({
-  getActiveMemoryEscalationProvider: hoisted.getActiveMemoryEscalationProvider,
-}));
 
 vi.mock("openclaw/plugin-sdk/memory-host-search", () => ({
   closeActiveMemorySearchManager: hoisted.closeActiveMemorySearchManager,
@@ -331,6 +327,7 @@ describe("active-memory plugin", () => {
     name: "Active Memory",
     logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
     runtime: {
+      decisions: { evaluate: hoisted.evaluateDecision },
       agent: {
         runEmbeddedAgent: runtimeRunEmbeddedAgent,
         resolveCliBackendDispatchEligibility,
@@ -1959,16 +1956,24 @@ describe("active-memory plugin", () => {
   });
 
   registerActiveMemoryEscalationIntegrationTests({
-    currentActiveMemoryConfig,
-    expectEmbeddedChannel,
     expectPrependContextContains,
     hasDebugLine,
     hasInfoLine,
     registerPluginConfig,
     runEmbeddedAgent,
     runPromptBuild,
-    setEscalationProvider: (provider) =>
-      hoisted.getActiveMemoryEscalationProvider.mockReturnValue(provider),
+    evaluateDecision: hoisted.evaluateDecision,
+    setDecisionAssistance: (enabled) => {
+      const agents = (configFile.agents ?? {}) as Record<string, unknown>;
+      const defaults = (agents.defaults ?? {}) as Record<string, unknown>;
+      configFile = {
+        ...configFile,
+        agents: {
+          ...agents,
+          defaults: { ...defaults, experimental: { decisionAssistance: enabled } },
+        },
+      };
+    },
     skippedRecallContext,
   });
 

@@ -1,4 +1,3 @@
-import { getActiveMemoryEscalationProvider } from "openclaw/plugin-sdk/active-memory-escalation-runtime";
 import { resolveAgentDir, resolveAgentWorkspaceDir } from "openclaw/plugin-sdk/agent-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { resolveRememberAcrossConversations } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
@@ -15,16 +14,16 @@ import {
   readActiveMemoryConfig,
 } from "./config.js";
 import {
-  ACTIVE_MEMORY_ESCALATION_PROVIDER_TIMEOUT_MS,
-  resolveRecallEscalationDecisionWithProvider,
+  createActiveMemoryDecisionEscalationDecider,
+  isActiveMemoryDecisionEscalationEligible,
+} from "./decision-escalation.js";
+import {
+  ACTIVE_MEMORY_ESCALATION_DECISION_TIMEOUT_MS,
+  resolveRecallEscalationDecisionWithDecider,
 } from "./escalation.js";
 import { buildPromptPrefix, buildRecallOutcomePrefix } from "./prompt.js";
 import { buildQuery, buildSearchQuery, extractRecentTurns, getModelRef } from "./query.js";
-import {
-  forgetActiveRecallRun,
-  toSingleLineErrorMessage,
-  toSingleLineLogValue,
-} from "./recall-state.js";
+import { forgetActiveRecallRun, toSingleLineErrorMessage } from "./recall-state.js";
 import { maybeResolveActiveRecall } from "./recall.js";
 import {
   ACTIVE_MEMORY_GLOBAL_MUTATION_ADMIN_REQUIRED_TEXT,
@@ -442,49 +441,51 @@ export default definePluginEntry({
               });
               return laneOneContext ? { prependContext: laneOneContext } : undefined;
             }
-            const escalationProvider =
+            const escalationDecisionRequested =
               invocationConfig.mode === "escalate" &&
               !laneOne.hasStrongHit &&
-              invocationConfig.escalationProvider
-                ? getActiveMemoryEscalationProvider(invocationConfig.escalationProvider)
+              invocationConfig.escalationDecision;
+            const escalationDecider =
+              escalationDecisionRequested &&
+              effectiveAgentId &&
+              isActiveMemoryDecisionEscalationEligible(liveConfig)
+                ? createActiveMemoryDecisionEscalationDecider({
+                    decisions: api.runtime.decisions,
+                    agentId: effectiveAgentId,
+                    onAbstain: (reason) => {
+                      api.logger.debug?.(
+                        `active-memory: escalation decision unavailable reason=${reason}; using built-in matcher`,
+                      );
+                    },
+                  })
                 : undefined;
-            const escalationProviderId = invocationConfig.escalationProvider
-              ? toSingleLineLogValue(invocationConfig.escalationProvider)
-              : "unknown";
-            if (
-              invocationConfig.mode === "escalate" &&
-              !laneOne.hasStrongHit &&
-              invocationConfig.escalationProvider &&
-              !escalationProvider
-            ) {
+            if (escalationDecisionRequested && !escalationDecider) {
               api.logger.debug?.(
-                `active-memory: escalation provider unavailable id=${escalationProviderId}; using built-in matcher`,
+                "active-memory: escalation decision requires Decision assistance; using built-in matcher",
               );
             }
-            const escalationProviderBudgetMs = Math.min(
-              ACTIVE_MEMORY_ESCALATION_PROVIDER_TIMEOUT_MS,
+            const escalationDecisionBudgetMs = Math.min(
+              ACTIVE_MEMORY_ESCALATION_DECISION_TIMEOUT_MS,
               Math.max(0, hookDeadline.remainingMs() - TRIGGER_LOOKUP_SETTLE_RESERVE_MS),
             );
-            const escalationDecision = await resolveRecallEscalationDecisionWithProvider({
+            const escalationDecision = await resolveRecallEscalationDecisionWithDecider({
               mode: invocationConfig.mode,
               message: currentUserMessage,
-              providerMessage: escalationMessage,
+              deciderMessage: escalationMessage,
               searchQuery,
               hasStrongLaneOneHit: laneOne.hasStrongHit,
-              provider: escalationProviderBudgetMs > 0 ? escalationProvider : undefined,
+              decider: escalationDecisionBudgetMs > 0 ? escalationDecider : undefined,
               signal: deadlineController.signal,
-              timeoutMs: Math.max(1, escalationProviderBudgetMs),
-              onProviderFallback: (reason) => {
-                api.logger.debug?.(
-                  `active-memory: escalation provider fallback id=${escalationProviderId} reason=${reason}`,
-                );
+              timeoutMs: Math.max(1, escalationDecisionBudgetMs),
+              onDeciderFallback: (reason) => {
+                api.logger.debug?.(`active-memory: escalation decision fallback reason=${reason}`);
               },
             });
             if (escalationDecision !== "recall") {
               // Ordinary turns intentionally skip recall in the default escalation mode.
               api.logger.debug?.(`active-memory: recall skipped reason=${escalationDecision}`);
               const outcomeContext =
-                escalationDecision === "no-recall-intent" || escalationDecision === "provider-skip"
+                escalationDecision === "no-recall-intent" || escalationDecision === "decision-skip"
                   ? buildRecallOutcomePrefix("skipped-no-recall-intent")
                   : undefined;
               const prependContext = [laneOneContext, outcomeContext].filter(Boolean).join("\n");

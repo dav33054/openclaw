@@ -17,7 +17,6 @@ type PluginApiFacadeSource = OpenClawPluginApi["session"]["state"] &
   Pick<OpenClawPluginApi["lifecycle"], "registerRuntimeLifecycle">;
 
 const identitySensitiveRegistrations = new Set([
-  "registerActiveMemoryEscalationProvider",
   "registerCompactionProvider",
   "registerDecisionProvider",
   "registerGatewayAccessPolicy",

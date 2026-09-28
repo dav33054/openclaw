@@ -52,18 +52,17 @@ describe("active-memory manifest config schema", () => {
     expect(normalizePluginConfig({}).mode).toBe("escalate");
   });
 
-  it("accepts and normalizes an escalation provider id", () => {
+  it("accepts and normalizes the escalation decision opt-in", () => {
     const result = validateJsonSchemaValue({
       schema: manifest.configSchema,
-      cacheKey: "active-memory.manifest.escalation-provider",
-      value: { mode: "escalate", escalationProvider: "local-memory-intent" },
+      cacheKey: "active-memory.manifest.escalation-decision",
+      value: { mode: "escalate", escalationDecision: true },
     });
 
     expect(result.ok).toBe(true);
-    expect(normalizePluginConfig({ escalationProvider: " local-memory-intent " })).toMatchObject({
-      escalationProvider: "local-memory-intent",
-    });
-    expect(normalizePluginConfig({ escalationProvider: " " }).escalationProvider).toBeUndefined();
+    expect(normalizePluginConfig({}).escalationDecision).toBe(false);
+    expect(normalizePluginConfig({ escalationDecision: true }).escalationDecision).toBe(true);
+    expect(normalizePluginConfig({ escalationDecision: "yes" }).escalationDecision).toBe(false);
   });
 
   it.each([

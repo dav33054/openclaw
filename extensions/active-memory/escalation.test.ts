@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   hasRecallIntent,
   resolveRecallEscalationDecision,
-  resolveRecallEscalationDecisionWithProvider,
+  resolveRecallEscalationDecisionWithDecider,
 } from "./escalation.js";
 
 describe("active-memory escalation", () => {
@@ -144,29 +144,29 @@ describe("active-memory escalation", () => {
 
   it.each([
     ["recall", "Explain the current configuration", "recall"],
-    ["skip", "What did we decide last time?", "provider-skip"],
+    ["skip", "What did we decide last time?", "decision-skip"],
     ["abstain", "What did we decide last time?", "recall"],
     ["abstain", "Explain the current configuration", "no-recall-intent"],
   ] as const)(
-    "lets a provider decision of %s resolve %j as %s",
-    async (providerDecision, message, expected) => {
+    "lets a decider result of %s resolve %j as %s",
+    async (deciderResult, message, expected) => {
       const signal = new AbortController().signal;
       await expect(
-        resolveRecallEscalationDecisionWithProvider({
+        resolveRecallEscalationDecisionWithDecider({
           mode: "escalate",
           message,
           searchQuery: `recent context\n${message}`,
           hasStrongLaneOneHit: false,
-          provider: {
-            id: "test-provider",
+          decider: {
             decide: async (params) => {
               expect(params).toEqual({
                 message,
                 searchQuery: `recent context\n${message}`,
                 signal: expect.any(AbortSignal),
+                timeoutMs: 1_000,
               });
               expect(params.signal.aborted).toBe(false);
-              return providerDecision;
+              return deciderResult;
             },
           },
           signal,
@@ -175,14 +175,14 @@ describe("active-memory escalation", () => {
     },
   );
 
-  it("accepts a synchronous provider decision", async () => {
+  it("accepts a synchronous decider result", async () => {
     await expect(
-      resolveRecallEscalationDecisionWithProvider({
+      resolveRecallEscalationDecisionWithDecider({
         mode: "escalate",
         message: "Explain the current configuration",
         searchQuery: "Explain the current configuration",
         hasStrongLaneOneHit: false,
-        provider: { id: "sync-provider", decide: () => "recall" },
+        decider: { decide: () => "recall" },
         signal: new AbortController().signal,
       }),
     ).resolves.toBe("recall");
@@ -193,29 +193,28 @@ describe("active-memory escalation", () => {
     async (kind) => {
       const now = vi.spyOn(performance, "now").mockReturnValue(0);
       const fallbacks: string[] = [];
-      let providerSignal: AbortSignal | undefined;
+      let deciderSignal: AbortSignal | undefined;
       try {
         await expect(
-          resolveRecallEscalationDecisionWithProvider({
+          resolveRecallEscalationDecisionWithDecider({
             mode: "escalate",
             message: "What did we decide last time?",
             searchQuery: "What did we decide last time?",
             hasStrongLaneOneHit: false,
-            provider: {
-              id: "overdue-provider",
+            decider: {
               decide: ({ signal }) => {
-                providerSignal = signal;
+                deciderSignal = signal;
                 // Computation advances the clock without yielding to timers.
-                now.mockReturnValue(101);
+                now.mockReturnValue(1_001);
                 return kind === "asynchronous" ? Promise.resolve("skip" as const) : "skip";
               },
             },
             signal: new AbortController().signal,
-            onProviderFallback: (reason) => fallbacks.push(reason),
+            onDeciderFallback: (reason) => fallbacks.push(reason),
           }),
         ).resolves.toBe("recall");
         expect(fallbacks).toEqual(["timeout"]);
-        expect(providerSignal?.aborted).toBe(true);
+        expect(deciderSignal?.aborted).toBe(true);
       } finally {
         now.mockRestore();
       }
@@ -227,17 +226,16 @@ describe("active-memory escalation", () => {
     ["always", false, "recall"],
     ["escalate", true, "strong-lane-one-hit"],
   ] as const)(
-    "does not call a provider in mode=%s with strongLaneOne=%s",
+    "does not call the decider in mode=%s with strongLaneOne=%s",
     async (mode, hasStrongLaneOneHit, expected) => {
       let calls = 0;
       await expect(
-        resolveRecallEscalationDecisionWithProvider({
+        resolveRecallEscalationDecisionWithDecider({
           mode,
           message: "What did we decide last time?",
           searchQuery: "What did we decide last time?",
           hasStrongLaneOneHit,
-          provider: {
-            id: "unused",
+          decider: {
             decide: async () => {
               calls += 1;
               return "skip" as const;
@@ -254,7 +252,7 @@ describe("active-memory escalation", () => {
     [
       "throws",
       async () => {
-        throw new Error("provider failed");
+        throw new Error("decider failed");
       },
       "error",
     ],
@@ -271,39 +269,38 @@ describe("active-memory escalation", () => {
     ],
     ["ignores abort", async () => await new Promise<"skip">(() => {}), "timeout"],
   ] as const)(
-    "falls back to the built-in matcher when the provider %s",
+    "falls back to the built-in matcher when the decider %s",
     async (_label, decide, expectedReason) => {
       const fallbacks: string[] = [];
       await expect(
-        resolveRecallEscalationDecisionWithProvider({
+        resolveRecallEscalationDecisionWithDecider({
           mode: "escalate",
           message: "What did we decide last time?",
           searchQuery: "What did we decide last time?",
           hasStrongLaneOneHit: false,
-          provider: { id: "unavailable", decide },
+          decider: { decide },
           signal: new AbortController().signal,
           timeoutMs: 5,
-          onProviderFallback: (reason) => fallbacks.push(reason),
+          onDeciderFallback: (reason) => fallbacks.push(reason),
         }),
       ).resolves.toBe("recall");
       expect(fallbacks).toEqual([expectedReason]);
     },
   );
 
-  it("keeps the full message for built-in fallback while bounding provider input", async () => {
+  it("keeps the full message for built-in fallback while bounding decider input", async () => {
     const fullMessage = `${"context ".repeat(70)} What did we decide last time?`;
-    const providerMessage = fullMessage.slice(0, 480);
+    const deciderMessage = fullMessage.slice(0, 480);
     let observedMessage: string | undefined;
 
     await expect(
-      resolveRecallEscalationDecisionWithProvider({
+      resolveRecallEscalationDecisionWithDecider({
         mode: "escalate",
         message: fullMessage,
-        providerMessage,
-        searchQuery: providerMessage,
+        deciderMessage,
+        searchQuery: deciderMessage,
         hasStrongLaneOneHit: false,
-        provider: {
-          id: "abstaining-provider",
+        decider: {
           decide: async ({ message }) => {
             observedMessage = message;
             return "abstain" as const;
@@ -312,14 +309,14 @@ describe("active-memory escalation", () => {
         signal: new AbortController().signal,
       }),
     ).resolves.toBe("recall");
-    expect(observedMessage).toBe(providerMessage);
+    expect(observedMessage).toBe(deciderMessage);
 
     await expect(
-      resolveRecallEscalationDecisionWithProvider({
+      resolveRecallEscalationDecisionWithDecider({
         mode: "escalate",
         message: fullMessage,
-        providerMessage,
-        searchQuery: providerMessage,
+        deciderMessage,
+        searchQuery: deciderMessage,
         hasStrongLaneOneHit: false,
         signal: new AbortController().signal,
       }),

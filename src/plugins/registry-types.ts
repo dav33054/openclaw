@@ -48,7 +48,6 @@ import type {
 } from "./plugin-registration.types.js";
 import type { PluginProviderRegistration } from "./provider-plugin.types.js";
 import type {
-  ActiveMemoryEscalationProviderRegistration,
   ContextEngineRegistration,
   MemoryCorpusSupplementRegistration,
   MemoryPluginCapabilityRegistration,
@@ -432,7 +431,6 @@ export type PluginRegistry = {
   webFetchProviders: PluginOwnedProviderRegistration<WebFetchProviderPlugin>[];
   webSearchProviders: PluginOwnedProviderRegistration<WebSearchProviderPlugin>[];
   workerProviders: Map<string, PluginOwnedProviderRegistration<WorkerProvider>>;
-  activeMemoryEscalationProviders: Map<string, ActiveMemoryEscalationProviderRegistration>;
   migrationProviders: PluginOwnedProviderRegistration<MigrationProviderPlugin>[];
   codexAppServerExtensionFactories: PluginCodexAppServerExtensionFactoryRegistration[];
   agentToolResultMiddlewareOwners: PluginAgentToolResultMiddlewareOwner[];

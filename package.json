@@ -442,16 +442,12 @@
     "!dist/plugin-sdk/text-grapheme.d.ts",
     "!dist/plugin-sdk/agent-harness-session-runtime.d.ts",
     "!dist/plugin-sdk/agent-harness-attempt-runtime.d.ts",
-    "!dist/plugin-sdk/secret-egress-runtime.d.ts",
-    "!dist/plugin-sdk/active-memory-escalation-runtime.d.ts"
+    "!dist/plugin-sdk/secret-egress-runtime.d.ts"
   ],
   "type": "module",
   "main": "dist/index.js",
   "exports": {
     ".": "./dist/index.js",
-    "./plugin-sdk/active-memory-escalation-runtime": {
-      "default": "./dist/plugin-sdk/active-memory-escalation-runtime.js"
-    },
     "./plugin-sdk/core": {
       "types": "./dist/plugin-sdk/core.d.ts",
       "default": "./dist/plugin-sdk/core.js"
