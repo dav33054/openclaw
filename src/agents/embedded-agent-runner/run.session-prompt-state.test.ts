@@ -319,6 +319,19 @@ describe("embedded run session prompt state", () => {
     });
   });
 
+  it.each([{ modelRun: true }, { promptMode: "none" as const }])(
+    "keeps the original prompt for a raw model run retry (%o)",
+    async (rawRun) => {
+      await using state = await createState(rawRun);
+
+      state.continueFromCurrentTranscript();
+
+      // Raw runs load no transcript history, so a continuation prompt would drop the task.
+      expect(state.activePrompt.override).toBeUndefined();
+      expect(state.activePrompt.internal).toBe(false);
+    },
+  );
+
   it("settles projection maintenance only for an owned transcript retry", async () => {
     const reconcile = await import("../../config/sessions/session-transcript-reconcile.js");
     const waitForProjection = vi
