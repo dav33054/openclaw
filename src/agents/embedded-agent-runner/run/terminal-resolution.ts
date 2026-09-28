@@ -178,7 +178,7 @@ export async function resolveEmbeddedRunTerminal(input: {
   recoveredFinalAssistantPayloadsAfterPromptTimeout?: EmbeddedAgentRunResult["payloads"];
   finalAssistantVisibleText?: string;
   finalAssistantRawText?: string;
-  finalAssistantRawTextIsFallback?: boolean;
+  finalAssistantMessageRawText?: string;
   agentMeta: EmbeddedAgentMeta;
   attemptToolSummary: EmbeddedAgentRunResult["meta"]["toolSummary"];
   failureSignal?: EmbeddedRunFailureSignal;
@@ -656,7 +656,7 @@ async function completeEmbeddedRun(
         finalPromptText: input.attempt.finalPromptText,
         finalAssistantVisibleText: input.finalAssistantVisibleText,
         finalAssistantRawText: input.finalAssistantRawText,
-        ...(input.finalAssistantRawTextIsFallback ? { finalAssistantRawTextIsFallback: true } : {}),
+        finalAssistantMessageRawText: input.finalAssistantMessageRawText,
         replayInvalid,
         livenessState,
         agentHarnessResultClassification: input.attempt.agentHarnessResultClassification,
