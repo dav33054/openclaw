@@ -8,6 +8,7 @@ import {
   validateChatHistoryParams,
   validateChatMetadataParams,
   validateChatSendParams,
+  validateChatSteerParams,
   validateCommandsListParams,
   validateConnectParams,
   validateModelsListParams,
@@ -399,6 +400,26 @@ describe("lazy protocol validators", () => {
       },
     ]);
     expectAccepted(protocol.validateSessionsCompactParams, [{ key: "global", agentId: "work" }]);
+  });
+
+  it("requires an exact queued-source identity and refuses replacement payloads for chat.steer", () => {
+    const source = {
+      sessionKey: "global",
+      agentId: "work",
+      sessionId: "original-session",
+      runId: "original-run",
+    };
+    expectAccepted(validateChatSteerParams, [source]);
+    expectRejected(validateChatSteerParams, [
+      { ...source, sessionId: undefined },
+      { ...source, runId: undefined },
+      { ...source, sessionId: "" },
+      { ...source, runId: "" },
+      { ...source, message: "replacement text" },
+      { ...source, attachments: [] },
+      { ...source, toolBindings: {} },
+      { ...source, queueMode: "interrupt" },
+    ]);
   });
 
   it("accepts distinct session and draft-account scopes on chat metadata params", () => {

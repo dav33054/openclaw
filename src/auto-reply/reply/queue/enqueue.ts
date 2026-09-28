@@ -22,7 +22,11 @@ import {
   kickFollowupDrainIfIdle,
   rememberFollowupDrainCallback,
 } from "./drain.js";
-import { completeFollowupRunLifecycle, markFollowupRunEnqueued } from "./lifecycle.js";
+import {
+  completeFollowupRunLifecycle,
+  isFollowupRunPending,
+  markFollowupRunEnqueued,
+} from "./lifecycle.js";
 import {
   peekRecentQueueMessageId,
   recordRecentQueueMessageId,
@@ -39,6 +43,7 @@ import {
   resolveFollowupAbortSignal,
   type EnqueueFollowupRunOptions,
   type FollowupRun,
+  type FollowupQueueDisposition,
   type QueueDedupeMode,
   type QueueSettings,
 } from "./types.js";
@@ -165,11 +170,7 @@ export function enqueueFollowupRun(
       return false;
     }
     if (options.steerCandidate) {
-      const { promise: acceptance, resolve: settle } = createDeferredCore<boolean>();
-      run.steerPending = { phase: "waiting", predecessor: queue.steerAcceptanceTail, settle };
-      // A canceled waiter can settle before its predecessor. Its successors
-      // must still wait for every earlier attempt to settle.
-      queue.steerAcceptanceTail = queue.steerAcceptanceTail.then(() => acceptance);
+      reserveSteerAcceptance(queue, run);
     }
     appendQueueItem({
       key,
@@ -186,8 +187,7 @@ export function enqueueFollowupRun(
   // publish an external queued identity for work that will never be admitted.
   const pendingCount = countPendingQueueItems(queue.items, queue.inFlight);
   if (queue.dropPolicy === "new" && queue.cap > 0 && pendingCount >= queue.cap) {
-    run.onQueueDisposition?.("queue-cap-new");
-    completeFollowupRunLifecycle(run);
+    completeOverflowedFollowupRun(run, "queue-cap-new");
     return false;
   }
   if (!markFollowupRunEnqueued(run)) {
@@ -206,6 +206,23 @@ export function enqueueFollowupRun(
     front: options.position === "front",
   });
   return true;
+}
+
+function completeOverflowedFollowupRun(
+  run: FollowupRun,
+  disposition: FollowupQueueDisposition,
+): void {
+  try {
+    try {
+      run.onQueueDisposition?.(disposition);
+    } finally {
+      completeFollowupRunLifecycle(run);
+    }
+  } catch (error) {
+    // Overflow already detached this source. A notification failure must not
+    // strand its authority, the consumed steer, or the remaining FIFO siblings.
+    defaultRuntime.error?.(`followup queue overflow settlement failed: ${String(error)}`);
+  }
 }
 
 function applyFollowupQueueOverflow(
@@ -233,8 +250,7 @@ function applyFollowupQueueOverflow(
         return;
       }
       for (const item of dropped) {
-        item.onQueueDisposition?.("queue-cap-old");
-        completeFollowupRunLifecycle(item);
+        completeOverflowedFollowupRun(item, "queue-cap-old");
       }
     },
     isProtected: (item) => item.protectFromQueueOverflow === true,
@@ -273,8 +289,7 @@ function applyFollowupQueueOverflow(
     }
   }
   if (!shouldEnqueue) {
-    run.onQueueDisposition?.(queue.dropPolicy === "new" ? "queue-cap-new" : "queue-cap");
-    completeFollowupRunLifecycle(run);
+    completeOverflowedFollowupRun(run, queue.dropPolicy === "new" ? "queue-cap-new" : "queue-cap");
     return false;
   }
   return true;
@@ -358,7 +373,8 @@ function consumeParkedFollowupRun(
   return true;
 }
 
-type ParkedSteerReservation = {
+export type ParkedSteerReservation = {
+  assertCurrent: () => void;
   admit: () => Promise<"steer" | "fallback" | "cancelled">;
   accepted: (accepted: boolean) => void;
   fallback: () => void;
@@ -387,31 +403,91 @@ export function parkSteerCandidate(
     },
     false,
   );
+  return createParkedSteerReservation(key, run);
+}
+
+function reserveSteerAcceptance(
+  queue: ReturnType<typeof getFollowupQueue>,
+  run: FollowupRun,
+): void {
+  const { promise: acceptance, resolve: settle } = createDeferredCore<boolean>();
+  run.steerPending = { phase: "waiting", predecessor: queue.steerAcceptanceTail, settle };
+  // Canceled waiters must not release successors before their own predecessors.
+  queue.steerAcceptanceTail = queue.steerAcceptanceTail.then(() => acceptance);
+}
+
+/** Reserve existing custody without enqueueing, readmitting, or changing FIFO position. */
+export function reserveQueuedSteerCandidate(
+  key: string,
+  run: FollowupRun,
+): ParkedSteerReservation | undefined {
+  const queue = getExistingFollowupQueue(key);
+  if (
+    !queue?.items.includes(run) ||
+    queue.inFlight.has(run) ||
+    queue.activeSummarySources.has(run) ||
+    run.steerPending ||
+    isFollowupRunAborted(run) ||
+    !isFollowupRunPending(run)
+  ) {
+    return undefined;
+  }
+  run.operatorAuthority?.assertCurrent();
+  reserveSteerAcceptance(queue, run);
+  return createParkedSteerReservation(key, run);
+}
+
+function createParkedSteerReservation(key: string, run: FollowupRun): ParkedSteerReservation {
+  const queue = getExistingFollowupQueue(key);
+  const pending = run.steerPending;
+  // Recovery may transfer this exact source and reservation into a replacement
+  // drain. It revokes injection, but the original attempt must still settle custody.
+  const ownsSourceReservation = () =>
+    isParkedFollowupRunOwned(key, run) && run.steerPending === pending;
+  const ownsReservation = () => getExistingFollowupQueue(key) === queue && ownsSourceReservation();
   return {
+    assertCurrent() {
+      if (!ownsReservation() || isFollowupRunAborted(run)) {
+        throw new Error("Queued steering source is no longer current");
+      }
+      run.operatorAuthority?.assertCurrent();
+    },
     async admit() {
-      const pending = run.steerPending;
       await racePromiseWithAbortSignal(
         pending?.predecessor ?? Promise.resolve(true),
         resolveFollowupAbortSignal(run),
       ).catch((error: unknown) => {
-        if (isFollowupRunAborted(run)) {
+        if (isFollowupRunAborted(run) || !ownsReservation()) {
           return false;
         }
         throw error;
       });
-      if (isFollowupRunAborted(run) || !isParkedFollowupRunOwned(key, run)) {
+      if (isFollowupRunAborted(run) || !ownsSourceReservation()) {
         return "cancelled";
       }
-      if (!pending || run.steerPending !== pending) {
+      if (!ownsReservation() || !pending) {
+        // A recovered source stays queued; only its old injection authority ended.
         return "fallback";
       }
       // The injection owner now decides whether this input can safely be replayed.
       pending.phase = "injecting";
       return "steer";
     },
-    accepted: (accepted) => settleParkedSteerAcceptance(key, run, accepted),
-    fallback: () => settleParkedSteerAcceptance(key, run, false),
-    consume: (disposition) => consumeParkedFollowupRun(key, run, disposition),
+    accepted: (accepted) => {
+      if (ownsSourceReservation()) {
+        settleParkedSteerAcceptance(key, run, accepted);
+      }
+    },
+    fallback: () => {
+      if (ownsSourceReservation()) {
+        settleParkedSteerAcceptance(key, run, false);
+      }
+    },
+    consume: (disposition) => {
+      if (ownsSourceReservation()) {
+        consumeParkedFollowupRun(key, run, disposition);
+      }
+    },
   };
 }
 

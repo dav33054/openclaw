@@ -45,6 +45,7 @@ const SESSION_WRITE_METHODS: ReadonlySet<string> = new Set([
   "question.get",
   "question.list",
   "chat.send",
+  "chat.steer",
   "chat.abort",
   "sessions.create",
   "sessions.patch",

@@ -41,7 +41,7 @@ import {
   isAudioPayload,
 } from "./agent-runner-helpers.js";
 import { runReplyQuestionInput } from "./agent-runner-question-input.js";
-import { runActiveReplySteer } from "./agent-runner-steer-adoption.js";
+import { createQueuedReplySteer, runActiveReplySteer } from "./agent-runner-steer-adoption.js";
 import { resolveQueuedReplyExecutionConfig } from "./agent-runner-utils.js";
 import { createAudioAsVoiceBuffer, createBlockReplyPipeline } from "./block-reply-pipeline.js";
 import { resolveEffectiveBlockStreamingConfig } from "./block-streaming.js";
@@ -337,6 +337,26 @@ export async function runReplyAgent(
     };
   };
 
+  const steerParams = {
+    followupRun,
+    opts,
+    queueKey,
+    replyOperationRunState,
+    resolvedQueue,
+    restartRecoverySourceTurnId,
+    runFollowup: queuedRunFollowupTurn,
+    sessionCtx,
+    sessionKey,
+    sessionEntry: activeSessionEntry,
+    storePath,
+    touchActiveSessionEntry,
+    typing,
+    typingSignals,
+  };
+  if (followupRun.turnAdoptionLifecycle) {
+    followupRun.steer = createQueuedReplySteer(steerParams);
+  }
+
   if (
     effectiveShouldSteer &&
     isActive &&
@@ -346,22 +366,9 @@ export async function runReplyAgent(
   ) {
     bindQueueDisposition();
     const result = await runActiveReplySteer({
-      followupRun,
-      opts,
+      ...steerParams,
       providedReplyOperation: activeReplyOperation,
-      queueKey,
       releaseAdmissionTicket,
-      replyOperationRunState,
-      resolvedQueue,
-      restartRecoverySourceTurnId,
-      runFollowup: queuedRunFollowupTurn,
-      sessionCtx,
-      sessionKey,
-      sessionEntry: activeSessionEntry,
-      storePath,
-      touchActiveSessionEntry,
-      typing,
-      typingSignals,
       toolAuthorityFingerprint: steeringAuthority.toolAuthorityFingerprint,
       automaticFallbackRoute: steeringAuthority.automaticFallbackRoute,
       pendingInputAuthorityFingerprint: steeringAuthority.pendingInputAuthorityFingerprint,
