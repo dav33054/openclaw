@@ -39,6 +39,50 @@ enum AppTranslocationSupport {
         """
     }
 
+    nonisolated static var quarantineWarningTitle: String {
+        "OpenClaw still has a quarantine flag"
+    }
+
+    /// Stable-path copy. Accessibility TCC can reset without App Translocation.
+    nonisolated static func quarantineWarningMessage(bundlePath: String) -> String {
+        """
+        OpenClaw is running from a stable path, but this bundle still has \
+        com.apple.quarantine. macOS can reset Accessibility on every launch even \
+        when the process is not under App Translocation. Screen Recording can stay granted.
+
+        Quit OpenClaw and clear the bundle flag:
+
+        xattr -dr com.apple.quarantine \(bundlePath)
+
+        Nested files under Contents/Resources can keep the attribute. That does not \
+        cause this reset. Reopen OpenClaw and re-grant Accessibility in System Settings.
+        """
+    }
+
+    /// Top-level bundle flag only. Nested resource quarantine does not reset Accessibility.
+    nonisolated static func installedBundleHasQuarantine(bundlePath: String?) -> Bool {
+        guard let bundlePath, !bundlePath.isEmpty else { return false }
+        return self.hasQuarantineAttribute(atPath: bundlePath)
+    }
+
+    nonisolated static func launchHealthWarning(
+        executablePath: String?,
+        bundlePath: String) -> (title: String, message: String)?
+    {
+        if self.isRunningUnderAppTranslocation(
+            executablePath: executablePath,
+            bundlePath: bundlePath)
+        {
+            return (self.stuckRelocationTitle, self.stuckRelocationMessage)
+        }
+        if self.installedBundleHasQuarantine(bundlePath: bundlePath) {
+            return (
+                self.quarantineWarningTitle,
+                self.quarantineWarningMessage(bundlePath: bundlePath))
+        }
+        return nil
+    }
+
     /// Best-effort recursive clear of Gatekeeper quarantine on a trusted install.
     @discardableResult
     nonisolated static func clearQuarantineAttributes(

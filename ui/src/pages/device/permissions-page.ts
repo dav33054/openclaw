@@ -41,16 +41,29 @@ class DevicePermissionsPage extends OpenClawLightDomElement {
     const { permissions } = snapshot;
     const preciseEditable =
       permissions.location.preciseEditable ?? snapshot.device.platform === "macos";
-    const translocationWarning =
-      snapshot.app?.runningUnderAppTranslocation === true
-        ? html`<div class="callout warning" role="status">
-            <strong>${t("configPage.deviceSettings.appTranslocationWarningTitle")}</strong>
-            <p>${t("configPage.deviceSettings.appTranslocationWarning")}</p>
-            ${renderLearnMoreLink("https://docs.openclaw.ai/platforms/mac/permissions")}
-          </div>`
-        : nothing;
+    const translocationWarning = snapshot.app?.runningUnderAppTranslocation === true;
+    const bundleQuarantineWarning =
+      !translocationWarning && snapshot.app?.bundleHasQuarantine === true;
+    const permissionIdentityWarning = translocationWarning
+      ? {
+          title: t("configPage.deviceSettings.appTranslocationWarningTitle"),
+          body: t("configPage.deviceSettings.appTranslocationWarning"),
+        }
+      : bundleQuarantineWarning
+        ? {
+            title: t("configPage.deviceSettings.bundleQuarantineWarningTitle"),
+            body: t("configPage.deviceSettings.bundleQuarantineWarning"),
+          }
+        : null;
+    const identityWarning = permissionIdentityWarning
+      ? html`<div class="callout warning" role="status">
+          <strong>${permissionIdentityWarning.title}</strong>
+          <p>${permissionIdentityWarning.body}</p>
+          ${renderLearnMoreLink("https://docs.openclaw.ai/platforms/mac/permissions")}
+        </div>`
+      : nothing;
     return html`
-      ${translocationWarning}
+      ${identityWarning}
       ${renderSettingsSection(
         { title: t("configPage.deviceSettings.systemAccess") },
         permissions.entries.map(({ id, status }) =>

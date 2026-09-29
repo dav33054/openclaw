@@ -60,7 +60,9 @@ extension DashboardWindowController {
                 quickChatEnabled: state.quickChatEnabled,
                 quickChatShortcut: .some(KeyboardShortcuts.getShortcut(for: .toggleQuickChat)?.description),
                 debugPaneEnabled: state.debugPaneEnabled,
-                runningUnderAppTranslocation: AppTranslocationSupport.isRunningUnderAppTranslocation()),
+                runningUnderAppTranslocation: AppTranslocationSupport.isRunningUnderAppTranslocation(),
+                bundleHasQuarantine: AppTranslocationSupport.installedBundleHasQuarantine(
+                    bundlePath: Bundle.main.bundleURL.path)),
             capabilities: .init(
                 canvasEnabled: state.canvasEnabled,
                 cameraEnabled: defaults.bool(forKey: cameraEnabledKey),

@@ -42,6 +42,7 @@ const nativeDeviceSettingsSnapshotSchema = z.object({
       quickChatShortcut: z.string().nullable().optional(), // human display string; null when unset
       debugPaneEnabled: z.boolean().optional(),
       runningUnderAppTranslocation: z.boolean().optional(),
+      bundleHasQuarantine: z.boolean().optional(),
     })
     .optional(),
   capabilities: z

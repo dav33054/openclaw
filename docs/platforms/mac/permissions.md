@@ -47,26 +47,34 @@ Ad-hoc signatures generate a new identity every build. macOS forgets previous gr
 
 ## App Translocation and residual quarantine
 
-macOS can still launch `/Applications/OpenClaw.app` from a temporary
+macOS can launch `/Applications/OpenClaw.app` from a temporary
 **App Translocation** path when `com.apple.quarantine` remains on the installed
-bundle (including nested resources). The running executable then looks like:
+bundle. The running executable then looks like:
 
 ```text
 .../T/AppTranslocation/.../OpenClaw.app/Contents/MacOS/OpenClaw
 ```
 
+The same Accessibility reset can happen **without** App Translocation. A
+notarized app at `/Applications/OpenClaw.app` can still have
+`com.apple.quarantine` on the bundle from a browser download. On each launch,
+macOS can rewrite `kTCCServiceAccessibility` back to denied. Screen Recording
+for the same bundle can stay granted. Clearing the top-level bundle flag is
+enough. Nested resource files under `Contents/Resources` can keep the attribute
+without reproducing the reset.
+
 TCC grants for Screen Recording, Accessibility, and Peekaboo Bridge stick to the
-stable `/Applications` identity. While the process is translocated, permission
-status and bridge checks can look denied even after you granted them to OpenClaw
-in System Settings.
+stable `/Applications` identity. While the process is translocated, or while the
+installed bundle still carries quarantine, permission status and bridge checks
+can look denied even after you granted them to OpenClaw in System Settings.
 
 OpenClaw clears residual quarantine before relocation handoff into Applications,
-and shows a health warning when the running executable path still contains
-`AppTranslocation`. If you are already stuck:
+and shows a health warning when the running path contains `AppTranslocation` or
+when the running bundle root still has `com.apple.quarantine`. If you are
+already stuck:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/OpenClaw.app
-# nested resource files may need: chmod u+w <path> first
 osascript -e 'tell application "OpenClaw" to quit'
 open -a /Applications/OpenClaw.app
 ```

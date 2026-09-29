@@ -633,9 +633,23 @@ describe("native device settings pages", () => {
     }
   });
 
+  it("warns when the installed bundle still has quarantine without App Translocation", async () => {
+    const snapshot = createNativeDeviceSettingsSnapshot();
+    snapshot.app.runningUnderAppTranslocation = false;
+    snapshot.app.bundleHasQuarantine = true;
+    const { capability } = createCapability(snapshot);
+    const page = await mount("openclaw-device-permissions-page", capability);
+    const warning = page.querySelector(".callout.warning");
+    expect(warning?.textContent).toContain("Installed app still has a quarantine flag");
+    expect(warning?.textContent).toContain("not under App Translocation");
+    expect(warning?.textContent).toContain("Nested resource files");
+    expect(warning?.textContent).not.toContain("Running under App Translocation");
+  });
+
   it("shows an App Translocation health warning on the permissions page", async () => {
     const snapshot = createNativeDeviceSettingsSnapshot();
     snapshot.app.runningUnderAppTranslocation = true;
+    snapshot.app.bundleHasQuarantine = true;
     const { capability } = createCapability(snapshot);
     const page = await mount("openclaw-device-permissions-page", capability);
     const warning = page.querySelector(".callout.warning");
