@@ -57,6 +57,7 @@ import { resolveDefaultAgentWorkspaceDir } from "../../agents/workspace.js";
 import { createThinkingCatalogResolver } from "../../auto-reply/thinking.js";
 import { getRuntimeConfig, getRuntimeConfigSourceSnapshot } from "../../config/config.js";
 import { resolveAgentModelPrimaryValue } from "../../config/model-input.js";
+import { captureRuntimeConfig } from "../../config/runtime-source-projection.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveProviderModelCatalogId } from "../../plugins/provider-model-routes.js";
 import { withPluginRuntimeRegistryScope } from "../../plugins/runtime/gateway-request-scope.js";
@@ -92,17 +93,19 @@ function resolveModelsListView(params: Record<string, unknown>): ModelCatalogBro
 
 /** Builds one per-agent, snapshot-scoped route projection for Gateway thinking metadata. */
 export function createGatewayAgentModelCatalogProjector(params: ModelCatalogDecisionParams) {
-  const authProjection = createModelCatalogDecisions(params);
+  const cfg = captureRuntimeConfig(params.cfg);
+  const authProjection = createModelCatalogDecisions({ ...params, cfg });
   const { evaluateEntry, evaluateNative, snapshot } = authProjection;
   let projectedCatalog: Promise<ModelCatalogEntry[]> | undefined;
   return {
     ...authProjection,
+    config: cfg,
     projectCatalog: () => {
       if (projectedCatalog) {
         return projectedCatalog;
       }
       const view = createModelCatalogView({
-        cfg: params.cfg,
+        cfg,
         catalog: snapshot.entries,
         routeVariants:
           snapshot.routeVariants.length > 0 ? snapshot.routeVariants : snapshot.entries,
@@ -113,7 +116,7 @@ export function createGatewayAgentModelCatalogProjector(params: ModelCatalogDeci
           const evaluation = evaluateNative(entry, await evaluateEntry(entry, routeVariants));
           const runtimeId =
             resolveCatalogDecisionRuntime({
-              cfg: params.cfg,
+              cfg,
               agentId: params.agentId,
               entry,
               evaluation,
@@ -345,7 +348,9 @@ export async function prepareModelsListResult(
     throw new Error("Model catalog omitted its published snapshot");
   }
   const sourceOwner = publishedOwner ?? ownerSnapshot;
-  const cfg = sourceOwner?.config ?? initialConfig;
+  const preloadedProjector = usedPreloadedCatalog ? params.catalogProjector : undefined;
+  const cfg =
+    preloadedProjector?.config ?? captureRuntimeConfig(sourceOwner?.config ?? initialConfig);
   const agentId = sourceOwner?.agentId ?? initialAgentId;
   const workspaceDir =
     sourceOwner?.workspaceDir ??
@@ -394,7 +399,7 @@ export async function prepareModelsListResult(
   // Capture authority again after acquisition and before hydrating a personal projection.
   draft?.assertCurrent();
   const projector =
-    (usedPreloadedCatalog ? params.catalogProjector : undefined) ??
+    preloadedProjector ??
     createGatewayAgentModelCatalogProjector({
       cfg,
       agentId,
