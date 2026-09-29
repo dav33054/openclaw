@@ -18,7 +18,11 @@ import {
 } from "../../auto-reply/reply/reply-run-registry.js";
 import { prepareReplyToolAuthority } from "../../auto-reply/reply/reply-tool-authority.js";
 import type { ChannelPlugin } from "../../channels/plugins/types.plugin.js";
-import { getRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
+import {
+  clearRuntimeConfigSnapshot,
+  getRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../../config/runtime-snapshot.js";
 import { runWithCliHistoryWriter } from "../../config/sessions/cli-history-boundary.js";
 import {
   loadSessionEntryReadOnly,
@@ -274,6 +278,14 @@ function createBundledMessageToolConfig(): OpenClawConfig {
     })),
   });
   return createCliBackendConfig({ bundleMcp: true });
+}
+
+/** Root the upcoming Claude child selects when nothing overrides the Gateway environment. */
+function gatewayClaudeProjectsRoot(): string {
+  return path.join(
+    process.env.CLAUDE_CONFIG_DIR ?? path.join(process.env.HOME ?? os.homedir(), ".claude"),
+    "projects",
+  );
 }
 
 function setCliBackendForPrepareTest(
@@ -661,6 +673,7 @@ describe("prepareCliRunContext", () => {
   });
 
   beforeEach(() => {
+    vi.stubEnv("CLAUDE_CONFIG_DIR", undefined);
     // Install narrow test doubles for external runtime seams so preparation
     // remains about data flow, not bundled plugin or loopback startup cost.
     defaultTestCliBackend = buildDefaultTestCliBackend();
@@ -5725,7 +5738,11 @@ describe("prepareCliRunContext", () => {
       cliSessionId: testCase.sessionId,
     });
 
-    const transcriptArgs = { sessionId: testCase.sessionId, workspaceDir: dir };
+    const transcriptArgs = {
+      sessionId: testCase.sessionId,
+      workspaceDir: dir,
+      projectsRoot: gatewayClaudeProjectsRoot(),
+    };
     if (testCase.checksTranscript) {
       expect(transcriptCheck).toHaveBeenCalledWith(transcriptArgs);
     } else {
@@ -6124,6 +6141,7 @@ describe("prepareCliRunContext", () => {
       expect(transcriptCheck).toHaveBeenCalledWith({
         sessionId: "warm-claude-sid",
         workspaceDir: dir,
+        projectsRoot: gatewayClaudeProjectsRoot(),
       });
       expect(orphanCheck).not.toHaveBeenCalled();
       expect(context.reusableCliSession).toEqual({
@@ -6188,6 +6206,51 @@ describe("prepareCliRunContext", () => {
     expect(orphanCheck).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])(
+    "resumes a configured-root transcript without requiring a live generation (warm=%s)",
+    async (warm) => {
+      const taskDir = path.join(fixture.session.dir, "task");
+      fs.mkdirSync(taskDir);
+      const canonicalCwd = fs.realpathSync.native(taskDir);
+      const configDir = path.join(fixture.session.dir, "selected Claude");
+      const projectDir = path.join(
+        configDir,
+        "projects",
+        canonicalCwd.replace(/[^a-zA-Z0-9]/g, "-"),
+      );
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(projectDir, "configured-session.jsonl"),
+        `${JSON.stringify({
+          type: "assistant",
+          message: { role: "assistant", content: [{ type: "text", text: "prior answer" }] },
+        })}\n`,
+      );
+      vi.stubEnv("CLAUDE_CONFIG_DIR", configDir);
+      setCliBackendForPrepareTest({ liveSession: true });
+      setCliRunnerPrepareTestDeps({
+        getCliLiveSessionGeneration: () => (warm ? "existing-generation" : undefined),
+      });
+
+      // Keep both transcript probes real: a false miss either invalidates the
+      // cold binding or unnecessarily pins the warm process generation.
+      const context = await fixture.prepare({
+        cwd: taskDir,
+        provider: "claude-cli",
+        model: "opus",
+        cliSessionBinding: {
+          sessionId: "configured-session",
+          cwdHash: hashCliSessionText(taskDir),
+        },
+      });
+      expect(context.reusableCliSession).toEqual({
+        mode: "reuse",
+        sessionId: "configured-session",
+      });
+      expect(context.requiredClaudeLiveSessionGeneration).toBeUndefined();
+    },
+  );
+
   it("checks claude-cli transcript content under the resolved cwd", async () => {
     const { dir } = fixture.session;
     const taskDir = path.join(dir, "task");
@@ -6223,11 +6286,122 @@ describe("prepareCliRunContext", () => {
     expect(transcriptCheck).toHaveBeenCalledWith({
       sessionId: "live-claude-sid",
       workspaceDir: taskDir,
+      projectsRoot: gatewayClaudeProjectsRoot(),
     });
     expect(context.reusableCliSession).toEqual({
       mode: "reuse",
       sessionId: "live-claude-sid",
     });
+  });
+
+  it("checks the claude-cli transcript under the config dir the next child receives", async () => {
+    const { dir } = fixture.session;
+    const childConfigDir = path.join(dir, "child-claude-profile");
+    setCliBackendForPrepareTest({
+      prepareExecution: async () => ({ env: { CLAUDE_CONFIG_DIR: childConfigDir } }),
+    });
+    const staleProjectsRoot = path.join(dir, "previous-claude-profile", "projects");
+    // The transcript only exists under the profile the previous run wrote to.
+    const transcriptCheck = vi.fn(
+      async (probe: { projectsRoot?: string }) => probe.projectsRoot === staleProjectsRoot,
+    );
+    const orphanCheck = vi.fn(async () => false);
+    setCliRunnerPrepareTestDeps({
+      claudeCliSessionTranscriptHasContent: transcriptCheck,
+      claudeCliSessionTranscriptHasOrphanedToolUse: orphanCheck,
+    });
+
+    const context = await fixture.prepare({
+      sessionKey: "agent:main:telegram:direct:peer",
+      prompt: "follow-up",
+      provider: "claude-cli",
+      model: "opus",
+      // The stored root belongs to the profile a previous run wrote under.
+      cliSessionBinding: {
+        sessionId: "moved-claude-sid",
+        cwdHash: hashCliSessionText(dir),
+        transcriptRoot: staleProjectsRoot,
+      },
+      cliSessionId: "moved-claude-sid",
+    });
+
+    expect(transcriptCheck).toHaveBeenCalledWith({
+      sessionId: "moved-claude-sid",
+      workspaceDir: dir,
+      projectsRoot: path.join(childConfigDir, "projects"),
+    });
+    // The stale profile's transcript cannot authorize a resume under the new one.
+    expect(context.reusableCliSession).toEqual({
+      mode: "invalidate",
+      invalidatedReason: "missing-transcript",
+    });
+    expect(orphanCheck).not.toHaveBeenCalled();
+  });
+
+  it("checks the claude-cli transcript under a skill-selected child config dir", async () => {
+    const { dir } = fixture.session;
+    const taskDir = path.join(dir, "skill-task");
+    fs.mkdirSync(taskDir, { recursive: true });
+    const canonicalCwd = fs.realpathSync.native(taskDir);
+    const childConfigDir = path.join(dir, "skill-claude-profile");
+    const projectDir = path.join(
+      childConfigDir,
+      "projects",
+      canonicalCwd.replace(/[^a-zA-Z0-9]/g, "-"),
+    );
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(projectDir, "skill-configured-sid.jsonl"),
+      `${JSON.stringify({
+        type: "assistant",
+        message: { role: "assistant", content: [{ type: "text", text: "prior answer" }] },
+      })}\n`,
+    );
+    setCliBackendForPrepareTest({ liveSession: true });
+
+    const config: OpenClawConfig = {
+      skills: {
+        entries: { "skill-selected-profile": { env: { CLAUDE_CONFIG_DIR: childConfigDir } } },
+      },
+    };
+    // Skill env application reads the active runtime snapshot, just as execution does.
+    const previousConfig = getRuntimeConfigSnapshot();
+    setRuntimeConfigSnapshot(config);
+    try {
+      const context = await fixture.prepare({
+        cwd: taskDir,
+        config,
+        skillsSnapshot: {
+          prompt: "",
+          skills: [
+            {
+              name: "skill-selected-profile",
+              skillKey: "skill-selected-profile",
+            },
+          ],
+        },
+        provider: "claude-cli",
+        model: "opus",
+        cliSessionBinding: {
+          sessionId: "skill-configured-sid",
+          cwdHash: hashCliSessionText(taskDir),
+        },
+        cliSessionId: "skill-configured-sid",
+      });
+
+      expect(context.reusableCliSession).toEqual({
+        mode: "reuse",
+        sessionId: "skill-configured-sid",
+      });
+      expect(context.requiredClaudeLiveSessionGeneration).toBeUndefined();
+      expect(process.env.CLAUDE_CONFIG_DIR).toBeUndefined();
+    } finally {
+      if (previousConfig) {
+        setRuntimeConfigSnapshot(previousConfig);
+      } else {
+        clearRuntimeConfigSnapshot();
+      }
+    }
   });
 
   it.each(["prepared", "admitted"] as const)(

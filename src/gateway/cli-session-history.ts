@@ -1,8 +1,8 @@
 // Gateway CLI session history importer.
 // Augments local chat history with bound external Claude CLI transcripts.
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
+import { resolveAuthorizedClaudeCliBinding } from "../agents/cli-runner/child-env.js";
 import type { SessionEntry } from "../config/sessions.js";
-import { getCliSessionBinding } from "../config/sessions/cli-session-binding.js";
 import { readClaudeCliSessionMessagesAsync } from "./cli-session-history.claude-snapshot.js";
 import {
   type ClaudeCliFallbackSeed,
@@ -23,18 +23,21 @@ type CliSessionHistoryParams = {
   provider?: string;
   localMessages: unknown[];
   homeDir?: string;
+  cwd?: string;
+  agentId?: string;
   preparedImportedMessages?: unknown[];
 };
 
 function resolveEligibleCliSessionBinding(params: CliSessionHistoryParams) {
-  const binding = getCliSessionBinding(params.entry, CLAUDE_CLI_PROVIDER);
   const provider = normalizeProviderId(params.provider ?? "");
   const eligible =
     !provider ||
     params.localMessages.length === 0 ||
     provider === CLAUDE_CLI_PROVIDER ||
     provider === ANTHROPIC_PROVIDER;
-  return binding?.sessionId && eligible ? binding : undefined;
+  // A retained location is continuity metadata, not authority to read a previous
+  // profile. Check before native discovery, including when merging a prepared snapshot.
+  return eligible ? resolveAuthorizedClaudeCliBinding(params) : undefined;
 }
 
 /** Resolves chat history plus whether a bound external transcript was actually incorporated. */
@@ -52,6 +55,8 @@ export function resolveChatHistoryWithCliSessionImports(params: CliSessionHistor
     readClaudeCliSessionMessages({
       cliSessionId: binding.sessionId,
       homeDir: params.homeDir,
+      cwd: binding.cwd ?? params.cwd,
+      projectsRoot: binding.transcriptRoot,
       localSessionId: params.entry?.sessionId,
       reseedReceipt: binding.reseedReceipt,
     });
@@ -74,12 +79,20 @@ export async function readChatHistoryCliSessionImportSnapshot(
   params: CliSessionHistoryParams,
 ): Promise<unknown[]> {
   const binding = resolveEligibleCliSessionBinding(params);
-  return binding?.sessionId
-    ? await readClaudeCliSessionMessagesAsync({
-        cliSessionId: binding.sessionId,
-        homeDir: params.homeDir,
-        localSessionId: params.entry?.sessionId,
-        reseedReceipt: binding.reseedReceipt,
-      })
+  if (!binding) {
+    return [];
+  }
+  const messages = await readClaudeCliSessionMessagesAsync({
+    cliSessionId: binding.sessionId,
+    homeDir: params.homeDir,
+    cwd: binding.cwd ?? params.cwd,
+    projectsRoot: binding.transcriptRoot,
+    localSessionId: params.entry?.sessionId,
+    reseedReceipt: binding.reseedReceipt,
+  });
+  const current = resolveEligibleCliSessionBinding(params);
+  return current?.sessionId === binding.sessionId &&
+    current.transcriptRoot === binding.transcriptRoot
+    ? messages
     : [];
 }

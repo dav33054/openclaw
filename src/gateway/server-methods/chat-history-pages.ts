@@ -155,15 +155,19 @@ async function readChatHistoryPageLocal(params: ChatHistoryPageParams): Promise<
               resolveChatHistoryWithCliSessionImports,
             } = await import("../cli-session-history.js");
             const importedMessages = await readChatHistoryCliSessionImportSnapshot({
+              agentId: params.sessionAgentId,
               entry,
               provider,
               localMessages: incrementalTail.rawMessages,
+              cwd: params.cwd,
             });
             const cliHistory = resolveChatHistoryWithCliSessionImports({
+              agentId: params.sessionAgentId,
               entry,
               provider,
               localMessages: incrementalTail.rawMessages,
               preparedImportedMessages: importedMessages,
+              cwd: params.cwd,
             });
             if ((offset !== undefined || messageId) && !cliHistory.imported) {
               return readChatHistoryPageLocal({ ...params, ignoreCliSessionImports: true });
@@ -180,10 +184,12 @@ async function readChatHistoryPageLocal(params: ChatHistoryPageParams): Promise<
                 typeof entry?.sessionStartedAt === "number" ? entry.sessionStartedAt : undefined,
               );
               const completeCliHistory = resolveChatHistoryWithCliSessionImports({
+                agentId: params.sessionAgentId,
                 entry,
                 provider,
                 localMessages: completeLocalMessages,
                 preparedImportedMessages: importedMessages,
+                cwd: params.cwd,
               });
               if (!completeCliHistory.imported) {
                 return readChatHistoryPageLocal({ ...params, ignoreCliSessionImports: true });

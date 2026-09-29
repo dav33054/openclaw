@@ -67,6 +67,7 @@ export type ChatHistoryPageParams = {
   offset: number | undefined;
   messageId: string | undefined;
   ignoreCliSessionImports?: boolean;
+  cwd?: string;
 };
 
 type SessionHistoryTranscriptMeta = {

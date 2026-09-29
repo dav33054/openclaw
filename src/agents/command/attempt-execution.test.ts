@@ -38,6 +38,8 @@ import {
 } from "./attempt-execution.helpers.test-support.js";
 import { resolveClaudeCliProjectDirForWorkspace } from "./claude-cli-project-dir.js";
 
+beforeEach(() => vi.stubEnv("CLAUDE_CONFIG_DIR", undefined));
+
 describe("resolveFallbackRetryPrompt", () => {
   const originalBody = "Summarize the quarterly earnings report and highlight key trends.";
 
