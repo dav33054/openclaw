@@ -23,7 +23,6 @@ import {
 import { normalizeAgentId } from "openclaw/plugin-sdk/routing";
 import { resolveStorePath } from "openclaw/plugin-sdk/session-store-paths";
 import { listMemorySessionTombstones } from "../memory-entry-origins.js";
-import { runInMemoryBackgroundContext } from "./background-context.js";
 import { shouldSyncSessionsForReindex } from "./manager-session-reindex.js";
 import {
   isMemorySessionIndexable,
@@ -132,8 +131,8 @@ export abstract class MemoryManagerSessionSyncOps extends MemoryManagerWatchOps 
     if (!this.sources.has("sessions") || this.sessionUnsubscribe) {
       return;
     }
-    this.sessionUnsubscribe = this.subscribeSessionTranscriptUpdates((update) =>
-      runInMemoryBackgroundContext(() => {
+    this.sessionUnsubscribe = this.subscribeSessionTranscriptUpdates((update) => {
+      void this.runBackgroundTask(async () => {
         if (this.closing || this.closed) {
           return;
         }
@@ -142,16 +141,13 @@ export abstract class MemoryManagerSessionSyncOps extends MemoryManagerWatchOps 
           this.scheduleSessionDirty(target);
           return;
         }
-        if (update.sessionFile) {
-          const sessionFile = update.sessionFile;
-          void this.withManagerOperation(() =>
-            this.scheduleCorpusSessionFileDirty(sessionFile),
-          ).catch((err: unknown) => {
-            log.warn(`memory session corpus update failed: ${String(err)}`);
-          });
+        if (!update.sessionFile) {
+          return;
         }
-      }),
-    );
+        const sessionFile = update.sessionFile;
+        await this.withManagerOperation(() => this.scheduleCorpusSessionFileDirty(sessionFile));
+      }, "memory session corpus update failed");
+    });
   }
 
   protected subscribeSessionTranscriptUpdates(
@@ -179,9 +175,10 @@ export abstract class MemoryManagerSessionSyncOps extends MemoryManagerWatchOps 
       return;
     }
     // Discovery can reopen the agent store after filesystem awaits; close must drain it.
-    void this.withManagerOperation(() => this.runSessionStartupCatchup()).catch((err: unknown) => {
-      log.warn("memory session startup catch-up failed: " + String(err));
-    });
+    void this.runBackgroundTask(
+      () => this.withManagerOperation(() => this.runSessionStartupCatchup()),
+      "memory session startup catch-up failed",
+    );
   }
 
   protected async markSessionStartupCatchupDirtyFiles(inspectSources = false): Promise<string[]> {
@@ -278,7 +275,7 @@ export abstract class MemoryManagerSessionSyncOps extends MemoryManagerWatchOps 
     if (!this.sessionsDirty || this.closed) {
       return dirtyFiles;
     }
-    void this.sync({ reason: "session-startup-catchup" }).catch((err: unknown) => {
+    await this.sync({ reason: "session-startup-catchup" }).catch((err: unknown) => {
       log.warn("memory sync failed (session-startup-catchup): " + String(err));
     });
     return dirtyFiles;
@@ -301,10 +298,9 @@ export abstract class MemoryManagerSessionSyncOps extends MemoryManagerWatchOps 
       if (this.closing || this.closed) {
         return;
       }
-      void this.withManagerOperation(() => this.processSessionUpdateBatch()).catch(
-        (err: unknown) => {
-          log.warn(`memory session update failed: ${String(err)}`);
-        },
+      void this.runBackgroundTask(
+        () => this.withManagerOperation(() => this.processSessionUpdateBatch()),
+        "memory session update failed",
       );
     }, SESSION_DIRTY_DEBOUNCE_MS);
   }
@@ -325,7 +321,7 @@ export abstract class MemoryManagerSessionSyncOps extends MemoryManagerWatchOps 
       this.sessionsDirty = true;
       // Keep both identity and file keys so every transcript backend enters the
       // targeted queue instead of letting an active sync clear this newer event.
-      void this.sync({
+      await this.sync({
         reason: "session-delta",
         sessions: pendingTargets,
         archiveFiles: pending,
