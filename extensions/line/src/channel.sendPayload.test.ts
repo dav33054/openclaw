@@ -281,11 +281,10 @@ describe("line outbound sendPayload", () => {
   });
 
   it("publishes completed batch receipts before a later batch send fails", async () => {
-    const { runtime, mocks } = createRuntime();
-    setLineRuntime(runtime);
-    const cfg = { channels: { line: {} } } as OpenClawConfig;
+    const fixture = createRuntime();
+    setLineRuntime(fixture.runtime);
     const laterFailure = new Error("second LINE batch send failed");
-    mocks.pushMessagesLine
+    fixture.mocks.pushMessagesLine
       .mockResolvedValueOnce(lineResult("m-first-batch"))
       .mockRejectedValueOnce(laterFailure);
     const onDeliveryResult = vi.fn();
@@ -304,9 +303,9 @@ describe("line outbound sendPayload", () => {
       }),
     ).rejects.toThrow("second LINE batch send failed");
 
-    expect(mocks.pushMessagesLine).toHaveBeenCalledTimes(2);
-    expect(mocks.pushMessagesLine.mock.calls[0]?.[1]).toHaveLength(5);
-    expect(mocks.pushMessagesLine.mock.calls[1]?.[1]).toHaveLength(1);
+    expect(fixture.mocks.pushMessagesLine).toHaveBeenCalledTimes(2);
+    expect(fixture.mocks.pushMessagesLine.mock.calls[0]?.[1]).toHaveLength(5);
+    expect(fixture.mocks.pushMessagesLine.mock.calls[1]?.[1]).toHaveLength(1);
     expect(onDeliveryResult).toHaveBeenCalledOnce();
     expect(onDeliveryResult).toHaveBeenCalledWith(
       expect.objectContaining({
