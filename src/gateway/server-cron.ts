@@ -40,7 +40,6 @@ import {
 import { runCronCommandJob } from "../cron/command-runner.js";
 import { resolveCronStoredDeliveryContext } from "../cron/delivery-context.js";
 import { resolveCronDeliveryPlan, sendCronAnnouncePayloadStrict } from "../cron/delivery.js";
-import { reconcileHeartbeatMonitorJobs } from "../cron/heartbeat-monitor.js";
 import { runCronIsolatedAgentTurn } from "../cron/isolated-agent.js";
 import { retryTransientDirectCronDelivery } from "../cron/isolated-agent/delivery-dispatch-policy.js";
 import { resolveCronJobBoundSessionKeys } from "../cron/job-session-bindings.js";
@@ -131,7 +130,7 @@ import {
   sendGatewayCronFailureAlert,
 } from "./server-cron-notifications.js";
 import { toPluginCronJob } from "./server-cron-plugin-job.js";
-import { reconcileSkillCollectionReviewJobs } from "./server-cron-skill-review-jobs.js";
+import { SYSTEM_JOB_RECONCILERS } from "./server-cron-system-job-reconcilers.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import {
   invalidateSessionAutomationIndex,
@@ -1467,10 +1466,7 @@ export function buildGatewayCronService(params: {
       try {
         assertCurrent();
         let converged = true;
-        for (const reconcile of [
-          reconcileHeartbeatMonitorJobs,
-          reconcileSkillCollectionReviewJobs,
-        ]) {
+        for (const reconcile of SYSTEM_JOB_RECONCILERS) {
           const { ok } = await reconcile({
             cron,
             cfg,
