@@ -62,7 +62,14 @@ function inspectChannelsEvent(event: unknown): { eventId: string; laneKey: strin
   return eventId ? { eventId, laneKey: `group:${nest}` } : null;
 }
 
-function inspectChatEvent(event: unknown): { eventId: string; laneKey: string } | null {
+type TlonIngressInspectionContext =
+  | { phase: "admission" }
+  | { phase: "claim"; claimedLaneKey: string | undefined };
+
+function inspectChatEvent(
+  event: unknown,
+  context: TlonIngressInspectionContext,
+): { eventId: string; laneKey: string } | null {
   const envelope = isRecord(event) ? event : null;
   const response = isRecord(envelope?.response) ? envelope.response : null;
   const add = isRecord(response?.add) ? response.add : null;
@@ -71,17 +78,30 @@ function inspectChatEvent(event: unknown): { eventId: string; laneKey: string } 
   if (!essay || !eventId) {
     return null;
   }
+  const rawWhom = isRecord(envelope?.whom)
+    ? nonEmptyString(envelope.whom.ship)
+    : nonEmptyString(envelope?.whom);
   const peer = extractAuthenticatedDmPartnerShip(envelope?.whom);
-  return peer ? { eventId, laneKey: `direct:${peer}` } : null;
+  if (!peer) {
+    return null;
+  }
+  const legacyLaneKey = rawWhom ? `direct:${rawWhom}` : null;
+  if (context.phase === "claim" && legacyLaneKey && context.claimedLaneKey === legacyLaneKey) {
+    // Before sender hardening, valid bare or mixed-form DM peers were persisted
+    // under their raw whom lane. Preserve only those authenticated legacy lanes.
+    return { eventId, laneKey: legacyLaneKey };
+  }
+  return { eventId, laneKey: `direct:${peer}` };
 }
 
 function inspectTlonIngressEvent(
   source: TlonIngressSource,
   event: unknown,
+  context: TlonIngressInspectionContext,
 ): { eventId: string; laneKey: string } | null {
   // Urbit SSE ids belong to a disposable HTTP channel. The message id inside
   // each firehose envelope survives resubscription and preserves the retired guard key.
-  return source === "channels" ? inspectChannelsEvent(event) : inspectChatEvent(event);
+  return source === "channels" ? inspectChannelsEvent(event) : inspectChatEvent(event, context);
 }
 
 function decodeTlonIngressPayload(
@@ -163,7 +183,7 @@ export function createTlonIngressMonitor(options: {
         getTlonRuntime().state.openChannelIngressQueue<TlonIngressPayload>({
           accountId: options.accountId,
         })),
-    inspect: (raw) => inspectTlonIngressEvent(raw.source, raw.event),
+    inspect: (raw, context) => inspectTlonIngressEvent(raw.source, raw.event, context),
     payload: {
       version: TLON_INGRESS_PAYLOAD_VERSION,
       serialize: (raw, { receivedAt }) => ({
