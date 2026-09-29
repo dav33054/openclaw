@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import { embeddedAgentLog, formatErrorMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { pruneMapToMaxSize } from "openclaw/plugin-sdk/collection-runtime";
+import { defineCodexBuildState } from "../build-state.js";
 import { readCodexSessionMeta } from "../session-catalog-provenance.js";
 import { refreshCodexAppServerAuthTokens, type CodexAppServerAuthHandoff } from "./auth-bridge.js";
 import { fingerprintTokenAuthProfileCacheKey } from "./auth-cache-key.js";
@@ -45,15 +46,20 @@ const CODEX_APP_SERVER_LIVE_THREAD_MAX_IDLE = 64;
 /** Return a deterministic error before Codex cancels its ten-second external-auth request. */
 const CODEX_EXTERNAL_AUTH_REFRESH_TIMEOUT_MS = 9_000;
 
-const configuredClients = new WeakMap<CodexAppServerClient, ClientRuntime>();
-const physicalThreadReleases = new WeakMap<
-  CodexAppServerLiveThreadOwnership["release"],
-  CodexAppServerLiveThreadOwnership["release"]
->();
-const claimedThreadReleaseTokens = new WeakMap<
-  CodexAppServerLiveThreadOwnership["release"],
-  ThreadOwnerToken
->();
+// The shared app-server client is build-scoped. Its retained and claimed owners
+// must follow the same physical client across duplicate plugin module copies.
+const { configuredClients, physicalThreadReleases, claimedThreadReleaseTokens } =
+  defineCodexBuildState("openclaw.codexAppServerClientRuntime", () => ({
+    configuredClients: new WeakMap<CodexAppServerClient, ClientRuntime>(),
+    physicalThreadReleases: new WeakMap<
+      CodexAppServerLiveThreadOwnership["release"],
+      CodexAppServerLiveThreadOwnership["release"]
+    >(),
+    claimedThreadReleaseTokens: new WeakMap<
+      CodexAppServerLiveThreadOwnership["release"],
+      ThreadOwnerToken
+    >(),
+  }))();
 
 /** Only an initialized, still-open physical client can own retained native subscriptions. */
 export function isCodexAppServerClientRuntimeLive(client: CodexAppServerClient): boolean {
