@@ -16,6 +16,10 @@ In encrypted (E2EE) rooms, outbound image events use `thumbnail_file` so image p
 
 All `openclaw matrix` commands accept `--verbose` (full diagnostics), `--json` (machine-readable output), and `--account <id>` (multi-account setups). Output is concise by default.
 
+When the Gateway is using an encrypted account, a local CLI command that needs the same crypto state waits for the Gateway monitor to finish its current work, save state, and yield the account. The command runs locally; the Gateway reloads a fresh client after it finishes. Waiting is cancelable and times out after two minutes. If you see a timeout, retry when the monitor can drain its work. No Gateway command RPC is needed.
+
+If a command reports an unresolved unsafe final crypto state, OpenClaw blocks another owner to avoid replaying stale keys. Preserve the account state for investigation and repair the crypto snapshot before clearing the account's poison marker; deleting the marker alone can lose keys.
+
 ### Enable encryption
 
 ```bash

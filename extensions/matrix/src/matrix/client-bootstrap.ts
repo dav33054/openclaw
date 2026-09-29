@@ -84,7 +84,7 @@ export async function resolveRuntimeMatrixClientWithReadiness(
     });
     assertCurrent?.();
   } catch (err) {
-    await lease.release({ mode: "stop" });
+    await lease.release({ mode: "discard" });
     throw err;
   }
   return {

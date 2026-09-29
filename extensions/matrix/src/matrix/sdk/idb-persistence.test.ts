@@ -22,6 +22,10 @@ import {
   writeMatrixIdbSnapshotJson,
   type MatrixIdbSnapshotRecord,
 } from "../crypto-state-store.js";
+import {
+  acquireMatrixCryptoStoreOwnership,
+  poisonMatrixCryptoStore,
+} from "./crypto-store-ownership.js";
 import { persistIdbToDisk, restoreIdbFromDisk } from "./idb-persistence.js";
 import {
   clearAllIndexedDbState,
@@ -61,6 +65,53 @@ describe("Matrix IndexedDB persistence", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  it("holds exclusive crypto-store ownership until release", async () => {
+    const snapshotPath = path.join(tmpDir, "crypto-idb-snapshot.json");
+    const first = await acquireMatrixCryptoStoreOwnership(snapshotPath);
+    const abort = new AbortController();
+    const waiting = acquireMatrixCryptoStoreOwnership(snapshotPath, { signal: abort.signal });
+    let acquired = false;
+    void waiting.then(() => {
+      acquired = true;
+    });
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 300);
+    });
+    expect(acquired).toBe(false);
+    await first.release();
+    const replacement = await waiting;
+    expect(acquired).toBe(true);
+    await replacement.release();
+  });
+
+  it("refuses a successor after a failed final state publication", async () => {
+    const snapshotPath = path.join(tmpDir, "crypto-idb-snapshot.json");
+    const owner = await acquireMatrixCryptoStoreOwnership(snapshotPath);
+    await poisonMatrixCryptoStore(snapshotPath);
+    await owner.release();
+    await expect(acquireMatrixCryptoStoreOwnership(snapshotPath)).rejects.toThrow(
+      "unresolved unsafe final state",
+    );
+  });
+
+  it("refuses a waiting successor when the departing owner poisons before unlock", async () => {
+    const snapshotPath = path.join(tmpDir, "crypto-idb-snapshot.json");
+    const owner = await acquireMatrixCryptoStoreOwnership(snapshotPath);
+    const successor = acquireMatrixCryptoStoreOwnership(snapshotPath);
+    for (let attempt = 0; attempt < 20; attempt++) {
+      if ((await fs.promises.readdir(`${snapshotPath}.owner.waiters`).catch(() => [])).length > 0) {
+        break;
+      }
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 50);
+      });
+    }
+    expect((await fs.promises.readdir(`${snapshotPath}.owner.waiters`)).length).toBeGreaterThan(0);
+    await poisonMatrixCryptoStore(snapshotPath);
+    await owner.release();
+    await expect(successor).rejects.toThrow("unresolved unsafe final state");
+  });
+
   it("persists and restores database contents for the selected prefix", async () => {
     const snapshotPath = path.join(tmpDir, "crypto-idb-snapshot.json");
     await seedDatabase({
@@ -93,6 +144,35 @@ describe("Matrix IndexedDB persistence", () => {
 
     const dbs = await indexedDB.databases();
     expect(dbs.map((entry) => entry.name)).not.toContain(otherCryptoDatabaseName);
+  });
+
+  it("replaces stale in-memory crypto records when ownership returns", async () => {
+    const snapshotPath = path.join(tmpDir, "crypto-idb-snapshot.json");
+    await seedDatabase({
+      name: cryptoDatabaseName,
+      storeName: "sessions",
+      records: [{ key: "durable", value: { session: "saved" } }],
+    });
+    await persistIdbToDisk({ snapshotPath, databasePrefix: DATABASE_PREFIX });
+    await seedDatabase({
+      name: cryptoDatabaseName,
+      storeName: "sessions",
+      records: [{ key: "stale", value: { session: "old-owner" } }],
+    });
+    await restoreIdbFromDisk(snapshotPath, undefined, DATABASE_PREFIX);
+    expect(await readDatabaseRecords({ name: cryptoDatabaseName, storeName: "sessions" })).toEqual([
+      { key: "durable", value: { session: "saved" } },
+    ]);
+  });
+
+  it("refuses a new account engine when its durable snapshot cannot be replayed", async () => {
+    const snapshotPath = path.join(tmpDir, "crypto-idb-snapshot.json");
+    await writeMatrixIdbSnapshotJson({
+      storageRootDir: tmpDir,
+      snapshotJson: "not valid JSON",
+      databaseCount: 1,
+    });
+    await expect(restoreIdbFromDisk(snapshotPath, undefined, DATABASE_PREFIX)).rejects.toThrow();
   });
 
   it("uses the client-owned state runtime after the ambient plugin scope changes", async () => {

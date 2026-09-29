@@ -56,7 +56,7 @@ describe("client bootstrap", () => {
       }),
     ).rejects.toThrow("prepare failed");
 
-    expect(sharedLeaseReleaseMock).toHaveBeenCalledWith({ mode: "stop" });
+    expect(sharedLeaseReleaseMock).toHaveBeenCalledWith({ mode: "discard" });
   });
 
   it("starts through the shared lease and releases when startup fails", async () => {
@@ -76,7 +76,7 @@ describe("client bootstrap", () => {
       ),
     ).rejects.toThrow("start failed");
 
-    expect(sharedLeaseReleaseMock).toHaveBeenCalledWith({ mode: "stop" });
+    expect(sharedLeaseReleaseMock).toHaveBeenCalledWith({ mode: "discard" });
   });
 
   it("borrows every non-injected client from the shared owner", async () => {

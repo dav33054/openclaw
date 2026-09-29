@@ -1,8 +1,12 @@
+import path from "node:path";
 import { ClientEvent, type MatrixClient as MatrixJsClient } from "matrix-js-sdk/lib/matrix.js";
 import { SyncState } from "matrix-js-sdk/lib/sync.js";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MatrixClient } from "../sdk.js";
+
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) => afterEach(cleanup));
 
 const fixture = vi.hoisted(() => ({
   init: vi.fn<MatrixJsClient["initRustCrypto"]>(),
@@ -13,6 +17,10 @@ const fixture = vi.hoisted(() => ({
 }));
 vi.mock("./joined-room-encryption.js", () => ({
   reconcileJoinedRoomEncryption: fixture.reconcile,
+}));
+vi.mock("./idb-persistence.js", () => ({
+  persistIdbToDisk: vi.fn(async () => undefined),
+  restoreIdbFromDisk: vi.fn(async () => false),
 }));
 vi.mock("matrix-js-sdk/lib/matrix.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("matrix-js-sdk/lib/matrix.js")>();
@@ -114,6 +122,54 @@ describe("Matrix encrypted startup ownership", () => {
       }
     },
   );
+
+  it("retains crypto-store ownership after a post-initialization abort", async () => {
+    const tempDir = tempDirs.make("matrix-crypto-owner-");
+    const snapshotPath = path.join(tempDir, "crypto-idb-snapshot.json");
+    const started = createDeferred<void>();
+    const finish = createDeferred<void>();
+    fixture.init.mockImplementation(async () => {
+      started.resolve();
+      await finish.promise;
+    });
+    const options = {
+      userId: "@bot:example.org",
+      deviceId: "BOT",
+      encryption: true,
+      autoBootstrapCrypto: false,
+      cryptoDatabasePrefix: "openclaw-matrix-owner-test",
+      idbSnapshotPath: snapshotPath,
+    };
+    const owner = new MatrixClient("https://matrix.example.org", "test-token", options);
+    const replacement = new MatrixClient("https://matrix.example.org", "test-token", options);
+    const abort = new AbortController();
+    const startup = owner.start({ abortSignal: abort.signal });
+
+    try {
+      await started.promise;
+      abort.abort();
+      finish.resolve();
+      await expect(startup).rejects.toMatchObject({ name: "AbortError" });
+      const replacementStartup = replacement.prepareForOneOff();
+      let ready = false;
+      void replacementStartup.then(
+        () => {
+          ready = true;
+        },
+        () => undefined,
+      );
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 300);
+      });
+      expect(ready).toBe(false);
+      await owner.stopWithoutPersist();
+      await expect(replacementStartup).rejects.toThrow("unresolved unsafe final state");
+    } finally {
+      finish.resolve();
+      await startup.catch(() => undefined);
+      await Promise.allSettled([owner.stopWithoutPersist(), replacement.stopWithoutPersist()]);
+    }
+  });
 
   it("bounds Rust initialization without tearing down its still-owned backend", async () => {
     vi.useFakeTimers();
