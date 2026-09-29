@@ -24,7 +24,9 @@ import { resolveAnnounceTarget } from "./sessions-announce-target.js";
 import {
   type AnnounceTarget,
   buildAgentToAgentAnnounceContext,
+  buildAgentToAgentAnnounceMessage,
   buildAgentToAgentReplyContext,
+  buildAgentToAgentReplyTurnContext,
 } from "./sessions-send-helpers.js";
 import { isNonDeliverableSessionsReply } from "./sessions-send-tokens.js";
 
@@ -307,8 +309,6 @@ export async function runSessionsSendA2AFlow(params: {
           targetSessionKey: params.displayKey,
           targetChannel,
           currentRole: current.role,
-          turn,
-          maxTurns: params.maxPingPongTurns,
         });
         const replyText = await runAgentStep({
           agentId: current.agentId,
@@ -321,6 +321,12 @@ export async function runSessionsSendA2AFlow(params: {
             : {}),
           message: latestReply,
           extraSystemPrompt: replyPrompt,
+          runtimeContextFragments: [
+            {
+              kind: "runtime-instruction",
+              text: buildAgentToAgentReplyTurnContext({ turn, maxTurns: params.maxPingPongTurns }),
+            },
+          ],
           timeoutMs: params.announceTimeoutMs,
           sourceAgentId: source.agentId,
           sourceSessionKey: source.sessionKey,
@@ -340,14 +346,16 @@ export async function runSessionsSendA2AFlow(params: {
       requesterChannel: params.requesterChannel,
       targetSessionKey: params.displayKey,
       targetChannel,
-      originalMessage: params.message,
-      roundOneReply: primaryReply,
-      latestReply,
     });
     const announceReply = await runAgentStep({
       agentId: params.targetAgentId,
       sessionKey: params.targetSessionKey,
-      message: "Agent-to-agent announce step.",
+      // Model-only prompt (transcriptMessage is empty), so the changing texts ride the current turn.
+      message: buildAgentToAgentAnnounceMessage({
+        originalMessage: params.message,
+        roundOneReply: primaryReply,
+        latestReply,
+      }),
       extraSystemPrompt: announcePrompt,
       timeoutMs: params.announceTimeoutMs,
       transcriptMessage: "",

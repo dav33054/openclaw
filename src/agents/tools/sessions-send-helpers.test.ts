@@ -209,8 +209,6 @@ describe("agent-to-agent prompt context", () => {
       targetSessionKey: "agent:target:main",
       targetChannel: "telegram",
       currentRole: "target",
-      turn: 2,
-      maxTurns: 5,
     });
 
     expect(context).toContain("Current agent: Agent 2 (target).");

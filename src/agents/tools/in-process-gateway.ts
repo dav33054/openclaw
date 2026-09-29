@@ -30,6 +30,7 @@ import {
   getPluginRuntimeGatewayRequestScope,
   withPluginRuntimeGatewayContextResolver,
 } from "../../plugins/runtime/gateway-request-scope.js";
+import type { RuntimeContextFragment } from "../internal-runtime-context.js";
 import {
   captureGatewayToolCallerAssertion,
   getGatewayToolCallerIdentity,
@@ -68,6 +69,8 @@ type AgentToolGatewayRequest = Pick<
 > & {
   agentRunTracking?: GatewayAgentRunTaskOwner;
   agentToolCaller?: TrustedAgentToolCaller;
+  /** Current-turn context for an in-process agent run; never sent over the wire. */
+  runtimeContextFragments?: RuntimeContextFragment[];
   /** Target policy checked at the mutation boundary, not after its own committed change. */
   sessionMutationCommitGuard?: () => void;
 };
@@ -249,6 +252,7 @@ async function callAgentToolGatewayRequestBound<T>(
     const {
       agentRunTracking: _agentRunTracking,
       agentToolCaller: _agentToolCaller,
+      runtimeContextFragments: _runtimeContextFragments,
       sessionMutationCommitGuard: _sessionMutationCommitGuard,
       ...wireRequest
     } = request;
@@ -279,6 +283,9 @@ async function callAgentToolGatewayRequestBound<T>(
     operatorRoleActor: { kind: "system" as const },
     ...(request.agentRunTracking ? { agentRunTracking: request.agentRunTracking } : {}),
     ...(request.agentToolCaller ? { agentToolCaller: request.agentToolCaller } : {}),
+    ...(request.runtimeContextFragments
+      ? { runtimeContextFragments: request.runtimeContextFragments }
+      : {}),
     syntheticScopes: scopes,
     syntheticScopeMode,
     ...(request.expectFinal !== undefined ? { expectFinal: request.expectFinal } : {}),
