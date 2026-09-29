@@ -574,6 +574,8 @@ export type SessionTranscriptWorkerSuccess<Value> = {
   ok: true;
   value: Value;
   closedHistoryDatabase?: SessionTranscriptHistoryWorkerInput["database"];
+  /** The replying worker observed that explicit close releases retained SQLite statements. */
+  sqliteCloseFinalizesStatements?: true;
 };
 
 export type SessionTranscriptWorkerReply<Kind extends keyof SessionTranscriptWorkerValues> =

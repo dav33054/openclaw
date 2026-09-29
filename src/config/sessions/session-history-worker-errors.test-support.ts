@@ -1,5 +1,8 @@
 import { vi } from "vitest";
-import type { WorkerTaskOptions } from "../../infra/worker-task-pool.types.js";
+import type {
+  WorkerTaskOptions,
+  WorkerTaskPoolOptions,
+} from "../../infra/worker-task-pool.types.js";
 import type { SessionTranscriptDisplayDeltaResult } from "./session-accessor.sqlite-history-query.js";
 import { SessionTranscriptColdError } from "./session-cold-storage-state.js";
 import { SessionTranscriptProjectionUnavailableError } from "./session-transcript-projection-error.js";
@@ -26,6 +29,7 @@ const observed = vi.hoisted(() => ({
   delta: vi.fn<() => SessionTranscriptDisplayDeltaResult>(),
   lookup: vi.fn<() => boolean>(),
   close: vi.fn<() => void>(),
+  closeFinalizesStatements: vi.fn<() => boolean>().mockReturnValue(false),
   run: vi.fn<(input: unknown, options: WorkerTaskOptions<unknown>) => Promise<unknown>>(),
   // Import-time pools are drained even when a name filter skips every test.
   closeResources: vi.fn<(key?: string) => Promise<void>>().mockResolvedValue(undefined),
@@ -55,6 +59,9 @@ vi.mock("node:worker_threads", async (importOriginal) => ({
     postMessage: (message: unknown) => observed.post(message),
   },
 }));
+vi.mock("../../infra/bun-sqlite-library.js", () => ({
+  ensureSqliteLibrarySelected: () => ({ source: "runtime" }),
+}));
 vi.mock("../../infra/runtime-worker-url.js", () => ({
   resolveRuntimeWorkerUrl: () => new URL("file:///synthetic/session-history.worker.mjs"),
   resolveRuntimeWorkerArgv: () => [],
@@ -64,16 +71,35 @@ vi.mock("../../infra/worker-task-pool.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../infra/worker-task-pool.js")>();
   return {
     ...actual,
-    createOwnedWorkerTaskPool: () => ({
-      run(prepare: () => unknown, options: WorkerTaskOptions<unknown>) {
-        if (observed.deferredRun) {
-          return observed.deferredRun(prepare, options);
-        }
-        return observed.run(prepare(), options);
-      },
-      rotate: observed.rotate,
-      closeResources: observed.closeResources,
-    }),
+    createOwnedWorkerTaskPool: (poolOptions: WorkerTaskPoolOptions<unknown>) => {
+      let worker: ReturnType<NonNullable<typeof poolOptions.prepareWorker>> | undefined;
+      return {
+        async run(prepare: () => unknown, options: WorkerTaskOptions<unknown>) {
+          const prepareInput = () => {
+            const input = prepare();
+            worker ??= poolOptions.prepareWorker?.();
+            return input;
+          };
+          const reply = await (observed.deferredRun
+            ? observed.deferredRun(prepareInput, options)
+            : observed.run(prepareInput(), options));
+          poolOptions.validateResult?.(reply);
+          return reply;
+        },
+        async rotate() {
+          const previous = worker;
+          worker = undefined;
+          try {
+            await observed.rotate();
+            await previous?.releaseResources?.();
+          } catch (error) {
+            void Promise.resolve(poolOptions.onRetirementFailure?.(error)).catch(() => undefined);
+            throw error;
+          }
+        },
+        closeResources: observed.closeResources,
+      };
+    },
     WorkerTaskPool: class {
       run(prepare: () => unknown, options: WorkerTaskOptions<unknown>) {
         return observed.run(prepare(), options);
@@ -122,6 +148,7 @@ vi.mock("../../infra/node-sqlite.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../infra/node-sqlite.js")>();
   return {
     ...actual,
+    supportsNodeSqliteCloseFinalization: observed.closeFinalizesStatements,
     openNodeSqliteDatabase: (...args: Parameters<typeof actual.openNodeSqliteDatabase>) =>
       observed.quarantinePaths.has(args[0])
         ? observed.quarantineOpen()

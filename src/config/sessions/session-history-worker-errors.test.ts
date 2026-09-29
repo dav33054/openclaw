@@ -39,6 +39,18 @@ function invoke(request: ReturnType<typeof input>) {
   return Promise.resolve(observed.handler(request));
 }
 
+function useBunMetadata() {
+  const descriptor = Object.getOwnPropertyDescriptor(process.versions, "bun");
+  if (!descriptor) {
+    Object.defineProperty(process.versions, "bun", { value: "synthetic-bun", configurable: true });
+  }
+  return () => {
+    if (!descriptor) {
+      Reflect.deleteProperty(process.versions, "bun");
+    }
+  };
+}
+
 function installWorkerTransport() {
   observed.run.mockImplementation(async (request, options) => {
     const posted = createDeferredCore<unknown>();
@@ -61,8 +73,7 @@ function installWorkerTransport() {
   });
 }
 
-async function readThroughWorker() {
-  const request = input();
+async function readThroughWorker(request = input()) {
   installWorkerTransport();
   return await withSessionHistoryWorkerDatabase(request.database, (owner) =>
     owner.readEntryPresence(request.scope),
@@ -81,6 +92,7 @@ beforeEach(() => {
   observed.delta.mockReset();
   observed.lookup.mockReset();
   observed.close.mockReset();
+  observed.closeFinalizesStatements.mockReset().mockReturnValue(false);
   observed.run.mockReset();
   observed.rotate.mockReset().mockResolvedValue(undefined);
   observed.closeResources.mockReset().mockResolvedValue(undefined);
@@ -498,58 +510,67 @@ it.runIf(!process.versions.bun)(
   },
 );
 
-it.each([false, true])(
-  "joins idle database cleanup retirement and retains failed custody (retirement fails=%s)",
-  async (fails) => {
-    const request = input();
-    observed.run.mockResolvedValue({ ok: true, value: false });
-    await withSessionHistoryWorkerDatabase(request.database, (owner) =>
-      owner.readEntryPresence(request.scope),
-    );
-    const resource = observed.resources.find((entry) => entry.agentId === "main");
-    assert(resource);
-    const failure = new Error("idle database native close failed");
-    const retirementFailure = new Error("idle database worker retirement failed");
-    const retirementEntered = createDeferredCore();
-    const retirement = createDeferredCore();
-    observed.closeResources.mockRejectedValueOnce(failure);
-    observed.rotate.mockImplementationOnce(() => {
-      retirementEntered.resolve();
-      return retirement.promise;
-    });
-    resource.revoke();
-    const closing = resource.close().catch((error: unknown) => error);
-    await retirementEntered.promise;
-    expect(observed.unregister).not.toHaveBeenCalled();
-    if (process.versions.bun) {
+it.each([
+  { fails: false, capableBun: false },
+  { fails: true, capableBun: false },
+  { fails: false, capableBun: true },
+  { fails: true, capableBun: true },
+])(
+  "joins idle cleanup and retains failures (retirement=$fails, capable Bun=$capableBun)",
+  async ({ fails, capableBun }) => {
+    const restoreRuntime = capableBun ? useBunMetadata() : () => {};
+    try {
+      observed.closeFinalizesStatements.mockReturnValue(capableBun);
+      observed.read.mockReturnValue(undefined);
+      const request = input();
+      expect(await readThroughWorker(request)).toBe(false);
+      const resource = observed.resources.find((entry) => entry.agentId === "main");
+      assert(resource);
+      const failure = new Error("idle database native close failed");
+      const retirementFailure = new Error("idle database worker retirement failed");
+      const retirementEntered = createDeferredCore();
+      const retirement = createDeferredCore();
+      observed.closeResources.mockRejectedValueOnce(failure);
+      observed.rotate.mockImplementationOnce(() => {
+        retirementEntered.resolve();
+        return retirement.promise;
+      });
+      resource.revoke();
+      const closing = resource.close().catch((error: unknown) => error);
+      await retirementEntered.promise;
+      expect(observed.unregister).not.toHaveBeenCalled();
+      if (process.versions.bun && !capableBun) {
+        if (fails) {
+          retirement.reject(retirementFailure);
+          expect(await closing).toBe(retirementFailure);
+          expect(observed.unregister).not.toHaveBeenCalled();
+          await resource.close();
+        } else {
+          retirement.resolve();
+          expect(await closing).toBeUndefined();
+        }
+        expect(observed.closeResources).not.toHaveBeenCalled();
+        expect(observed.unregister).toHaveBeenCalledOnce();
+        return;
+      }
       if (fails) {
         retirement.reject(retirementFailure);
-        expect(await closing).toBe(retirementFailure);
+        const result = await closing;
+        assert(result instanceof AggregateError);
+        expect(result.errors).toEqual([failure, retirementFailure]);
         expect(observed.unregister).not.toHaveBeenCalled();
         await resource.close();
       } else {
         retirement.resolve();
-        expect(await closing).toBeUndefined();
+        expect(await closing).toBe(failure);
       }
-      expect(observed.closeResources).not.toHaveBeenCalled();
       expect(observed.unregister).toHaveBeenCalledOnce();
-      return;
+      expect(observed.closeResources).toHaveBeenCalledWith(
+        JSON.stringify([{ path: request.database.path }]),
+      );
+    } finally {
+      restoreRuntime();
     }
-    if (fails) {
-      retirement.reject(retirementFailure);
-      const result = await closing;
-      assert(result instanceof AggregateError);
-      expect(result.errors).toEqual([failure, retirementFailure]);
-      expect(observed.unregister).not.toHaveBeenCalled();
-      await resource.close();
-    } else {
-      retirement.resolve();
-      expect(await closing).toBe(failure);
-    }
-    expect(observed.unregister).toHaveBeenCalledOnce();
-    expect(observed.closeResources).toHaveBeenCalledWith(
-      JSON.stringify([{ path: request.database.path }]),
-    );
   },
 );
 
@@ -651,15 +672,13 @@ it.runIf(!process.versions.bun).each([false, true])(
   },
 );
 
-it("keeps native worker retirement for Bun candidate cleanup", async () => {
+it.each([false, true])("uses only the replying Bun discovery capability (%s)", async (capable) => {
   const request = input();
   const candidates = [{ path: request.database.path, physicalPath: request.database.path }];
-  const descriptor = Object.getOwnPropertyDescriptor(process.versions, "bun");
-  if (!descriptor) {
-    Object.defineProperty(process.versions, "bun", { value: "synthetic-bun", configurable: true });
-  }
+  const restoreRuntime = useBunMetadata();
   observed.run.mockResolvedValue({
     ok: true,
+    ...(capable ? { sqliteCloseFinalizesStatements: true } : {}),
     value: {
       kind: "session-store-target",
       logicalAgentId: "main",
@@ -676,13 +695,11 @@ it("keeps native worker retirement for Bun candidate cleanup", async () => {
         registeredDatabases: [],
       });
     });
-    expect(observed.closeResources).not.toHaveBeenCalled();
-    expect(observed.rotate).toHaveBeenCalledTimes(1);
+    expect(observed.closeResources).toHaveBeenCalledTimes(capable ? 1 : 0);
+    expect(observed.rotate).toHaveBeenCalledTimes(capable ? 0 : 1);
     expect(observed.unregister).toHaveBeenCalledTimes(1);
   } finally {
-    if (!descriptor) {
-      Reflect.deleteProperty(process.versions, "bun");
-    }
+    restoreRuntime();
   }
 });
 
@@ -693,6 +710,7 @@ it.each(["read-failed", "database-missing", "registry-required-after-failure"] a
     const candidates = [{ path: request.database.path, physicalPath: request.database.path }];
     observed.run.mockResolvedValue({
       ok: true,
+      sqliteCloseFinalizesStatements: true,
       value:
         reason === "registry-required-after-failure"
           ? { kind: "session-target-registry-required", readFailed: true }
@@ -710,7 +728,7 @@ it.each(["read-failed", "database-missing", "registry-required-after-failure"] a
         registeredDatabases: [],
       });
     });
-    const retired = reason !== "database-missing" || Boolean(process.versions.bun);
+    const retired = reason !== "database-missing";
     expect(observed.closeResources).toHaveBeenCalledTimes(retired ? 0 : 1);
     expect(observed.rotate).toHaveBeenCalledTimes(
       reason === "registry-required-after-failure" ? 2 : retired ? 1 : 0,

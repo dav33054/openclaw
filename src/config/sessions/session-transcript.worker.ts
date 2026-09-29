@@ -1,10 +1,12 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { supportsNodeSqliteCloseFinalization } from "../../infra/node-sqlite.js";
 import type {
   UsageCostWorkerInput,
   UsageCostWorkerReply,
 } from "../../infra/session-cost-usage-worker.types.js";
 import { withSqliteReaderOwner } from "../../infra/sqlite-reader-lifecycle.js";
-import { serveOwnedWorkerTasks } from "../../infra/worker-task-server.js";
+import type { WorkerTaskControl } from "../../infra/worker-task-native-sections.js";
+import { serveOwnedWorkerTasks, type WorkerTaskChannel } from "../../infra/worker-task-server.js";
 import { cloneEnvWithPlatformSemantics } from "../config-env-vars.js";
 import type { SessionIdentityEvidenceResult } from "./session-accessor.sqlite-entry-availability.js";
 import { readSessionColdTranscript } from "./session-cold-storage-state.js";
@@ -21,6 +23,34 @@ import type {
   SessionTranscriptWorkerSuccess,
   SessionTranscriptWorkerValues,
 } from "./session-transcript-worker.types.js";
+
+type SessionWorkerReply =
+  | SessionTranscriptWorkerReply<keyof SessionTranscriptWorkerValues>
+  | UsageCostWorkerReply;
+
+function serveSessionHistoryWorkerTasks(
+  handler: (
+    request: SessionTranscriptWorkerInput | UsageCostWorkerInput,
+    channel: WorkerTaskChannel | undefined,
+    control: WorkerTaskControl,
+  ) => Promise<SessionWorkerReply>,
+  options: Parameters<typeof serveOwnedWorkerTasks<SessionWorkerReply>>[1],
+) {
+  serveOwnedWorkerTasks(async (input, channel, control): Promise<SessionWorkerReply> => {
+    // SAFETY: The paired runtime constructs this request; SQLite reads validate admission.
+    const request = input as SessionTranscriptWorkerInput | UsageCostWorkerInput;
+    const reply = await handler(request, channel, control);
+    if (
+      request.kind !== "usage-cost" &&
+      reply.ok &&
+      process.versions.bun &&
+      supportsNodeSqliteCloseFinalization()
+    ) {
+      return { ...reply, sqliteCloseFinalizesStatements: true };
+    }
+    return reply;
+  }, options);
+}
 
 // Keep target switching within the existing serialized worker; no read snapshot survives a task.
 const MAX_RETAINED_HISTORY_DATABASES = 64;
@@ -81,9 +111,9 @@ let releaseReadValidation:
   | typeof import("../../state/openclaw-agent-db-validation-cache.js").releaseOpenClawAgentDatabaseReadValidation
   | undefined;
 
-serveOwnedWorkerTasks(
+serveSessionHistoryWorkerTasks(
   async (
-    input,
+    request,
     channel,
     control,
   ): Promise<
@@ -98,8 +128,6 @@ serveOwnedWorkerTasks(
       closeReadOnlyCandidates = closeCandidates;
       releaseReadValidation = releaseValidation;
     }
-    // SAFETY: The paired runtime constructs this request; the SQLite snapshot validates admission.
-    const request = input as SessionTranscriptWorkerInput | UsageCostWorkerInput;
     if (request.kind === "sqlite-target") {
       const { resolveSqliteTargetFromSessionStorePath } =
         await import("./session-sqlite-target.js");

@@ -88,7 +88,7 @@ Bun-compatible selection on Bun. Both results are required; they share existing
 jobs and execute sequentially within each worker slot. Older targets without this
 capability retain Node-only testing.
 This includes the Control UI config when the target's runtime owner admits it;
-its Bun pass excludes two GC-sensitive files retained in the full Node pass.
+its Bun pass excludes the GC-sensitive files retained in the full Node pass.
 An older unit-only runtime owner retains the UI's Node pass.
 
 Package Acceptance separately retains expanded published-upgrade scenarios:

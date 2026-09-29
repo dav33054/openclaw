@@ -1,7 +1,10 @@
 // Loads node:sqlite with OpenClaw warning handling.
+import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import path from "node:path";
+import type { DatabaseSync, StatementSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
+import { isMainThread } from "node:worker_threads";
 import { ensureSqliteLibrarySelected } from "./bun-sqlite-library.js";
 import { formatErrorMessage } from "./errors.js";
 import { registerNodeSqliteDisposeCallback } from "./kysely-sync-cache-state.js";
@@ -15,7 +18,8 @@ const require = createRequire(import.meta.url);
 let validatedSqliteModule: typeof import("node:sqlite") | undefined;
 let extensionLoadingSupported = false;
 let jsonbSupported = false;
-// Bun cannot confirm native disposal until the owning worker exits.
+let closeFinalizationProbe: ReturnType<typeof probeSqliteCloseFinalization> | undefined;
+// Shared-state native closes retain Bun worker-exit custody.
 export let bunSqliteNativeCleanupPending = false;
 
 type NodeSqliteDatabaseOptions = ConstructorParameters<
@@ -114,8 +118,6 @@ export function requireNodeSqlite(): typeof import("node:sqlite") {
   installProcessWarningFilter();
   try {
     ensureSqliteLibrarySelected();
-    // Bun follow-up: Revalidate close/dispose file release after oven-sh/bun#40005 ships.
-    // Bun 1.4.2 retains native statements after close; node:sqlite exposes no finalizer.
     const sqlite = require("node:sqlite") as typeof import("node:sqlite");
     assertSafeSqliteRuntime(sqlite);
     return sqlite;
@@ -137,6 +139,22 @@ export function supportsNodeSqliteExtensionLoading(): boolean {
 export function supportsNodeSqliteJsonb(): boolean {
   requireNodeSqlite();
   return jsonbSupported;
+}
+
+/** Only the executing database worker may establish its native cleanup capability. */
+export function supportsNodeSqliteCloseFinalization(): boolean {
+  if (isMainThread) {
+    return false;
+  }
+  try {
+    closeFinalizationProbe ??= probeSqliteCloseFinalization(
+      requireNodeSqlite().DatabaseSync,
+      randomUUID(),
+    );
+  } catch {
+    closeFinalizationProbe = { supported: false, databases: [], statements: [] };
+  }
+  return closeFinalizationProbe.supported;
 }
 
 /** Open node:sqlite through OpenClaw's runtime and filesystem-location boundary. */
@@ -168,4 +186,72 @@ export function readSqliteDataVersion(database: import("node:sqlite").DatabaseSy
     throw new Error("SQLite did not return a numeric PRAGMA data_version");
   }
   return row.data_version;
+}
+
+type SqliteCloseFinalizationProbe = {
+  supported: boolean;
+  databases: DatabaseSync[];
+  statements: StatementSync[];
+  iterator?: ReturnType<StatementSync["iterate"]>;
+};
+
+/** Retain failed probe resources until the executing worker's existing exit boundary. */
+function probeSqliteCloseFinalization(
+  Database: typeof DatabaseSync,
+  name: string,
+): SqliteCloseFinalizationProbe {
+  const probe: SqliteCloseFinalizationProbe = { supported: false, databases: [], statements: [] };
+  try {
+    const uri = `file:openclaw-close-${name}?mode=memory&cache=shared`;
+    const open = () => {
+      // Ignored URI parameters cannot create a disk file with READONLY admission.
+      const database = new Database(uri, { readOnly: true });
+      probe.databases.push(database);
+      if (database.location() !== null) {
+        throw new Error("SQLite close probe requires an in-memory database");
+      }
+      return database;
+    };
+    const database = open();
+    database.exec("CREATE TABLE close_probe(value INTEGER); INSERT INTO close_probe VALUES(1),(2)");
+    for (let index = 0; index < 3; index++) {
+      probe.statements.push(database.prepare("SELECT value FROM close_probe ORDER BY value"));
+    }
+    if (probe.statements[1]!.get()?.value !== 1) {
+      return probe;
+    }
+    probe.iterator = probe.statements[2]!.iterate();
+    if (probe.iterator.next().value?.value !== 1) {
+      return probe;
+    }
+    const witness = open();
+    witness.exec("SELECT value FROM close_probe");
+    witness.close();
+    database.close();
+    const replacement = open();
+    const observation = replacement.prepare(
+      "SELECT COUNT(*) AS count FROM sqlite_schema WHERE name = 'close_probe'",
+    );
+    probe.statements.push(observation);
+    probe.supported = !database.isOpen && observation.get()?.count === 0;
+  } catch {
+    // Unsupported sharing or uncertain cleanup keeps the existing worker-exit boundary.
+    probe.supported = false;
+  } finally {
+    for (const database of probe.databases.toReversed()) {
+      try {
+        if (database.isOpen) {
+          database.close();
+        }
+      } catch {
+        probe.supported = false;
+      }
+    }
+    if (probe.supported) {
+      probe.databases.length = 0;
+      probe.statements.length = 0;
+      probe.iterator = undefined;
+    }
+  }
+  return probe;
 }

@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { channel } from "node:diagnostics_channel";
 import { afterAll, afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SQLITE_IDLE_HANDLE_TTL_MS } from "../../infra/sqlite-handle-lifecycle.js";
-import type { WorkerTaskOptions } from "../../infra/worker-task-pool.types.js";
+import type {
+  WorkerTaskOptions,
+  WorkerTaskPoolOptions,
+} from "../../infra/worker-task-pool.types.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
   historyLane,
@@ -29,6 +32,7 @@ const observed = vi.hoisted(() => ({
   closeResources: vi.fn<(key?: string) => Promise<void>>().mockResolvedValue(undefined),
   unregister: vi.fn<() => void>(),
   resources: [] as Resource[],
+  replaceWorkers: [] as Array<() => () => Promise<void>>,
 }));
 
 vi.mock("node:diagnostics_channel", async (importOriginal) => {
@@ -43,12 +47,38 @@ vi.mock("node:diagnostics_channel", async (importOriginal) => {
 
 vi.mock("../../infra/worker-task-pool.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../infra/worker-task-pool.js")>()),
-  createOwnedWorkerTaskPool: () => ({
-    run: (prepare: () => unknown, options: WorkerTaskOptions<unknown>) =>
-      observed.run(prepare(), options),
-    rotate: observed.rotate,
-    closeResources: observed.closeResources,
-  }),
+  createOwnedWorkerTaskPool: (poolOptions: WorkerTaskPoolOptions<unknown>) => {
+    let worker: ReturnType<NonNullable<typeof poolOptions.prepareWorker>> | undefined;
+    observed.replaceWorkers.push(() => {
+      const previous = worker;
+      worker = poolOptions.prepareWorker?.();
+      return async () => previous?.releaseResources?.();
+    });
+    return {
+      async run(prepare: () => unknown, options: WorkerTaskOptions<unknown>) {
+        const preparedInput = prepare();
+        worker ??= poolOptions.prepareWorker?.();
+        const reply = await observed.run(preparedInput, options);
+        poolOptions.validateResult?.(reply);
+        return reply;
+      },
+      async rotate() {
+        const previous = worker;
+        worker = undefined;
+        try {
+          await observed.rotate();
+          await previous?.releaseResources?.();
+        } catch (error) {
+          void Promise.resolve(poolOptions.onRetirementFailure?.(error)).catch(() => undefined);
+          throw error;
+        }
+      },
+      closeResources: observed.closeResources,
+    };
+  },
+}));
+vi.mock("../../infra/bun-sqlite-library.js", () => ({
+  ensureSqliteLibrarySelected: () => ({ source: "runtime" }),
 }));
 vi.mock("../../state/openclaw-agent-db-resources.js", () => ({
   matchesAgentDatabaseReadCandidatePath: (candidate: { path: string }, targetPath: string) =>
@@ -251,6 +281,54 @@ it.each([false, true])(
     expect(observed.unregister).toHaveBeenCalledTimes(1);
   },
 );
+
+it("keeps native-close reuse with the replying lane and worker generation", async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(process.versions, "bun");
+  if (!descriptor) {
+    Object.defineProperty(process.versions, "bun", { value: "synthetic-bun", configurable: true });
+  }
+  const read = async (lane: typeof historyLane, capable: boolean) => {
+    const request = input();
+    observed.run.mockResolvedValueOnce({
+      ok: true,
+      value: false,
+      ...(capable ? { sqliteCloseFinalizesStatements: true } : {}),
+    });
+    await withSessionHistoryWorkerDatabase(
+      request.database,
+      (owner) => owner.readEntryPresence(request.scope),
+      lane,
+    );
+    const resource = observed.resources.at(-1);
+    assert(resource?.agentId);
+    return resource;
+  };
+  try {
+    const proven = await read(historyLane, true);
+    const otherLane = await read(maintenanceLane, false);
+    await otherLane.close();
+    expect(observed.rotate).toHaveBeenCalledOnce();
+    await proven.close();
+    expect(observed.closeResources).toHaveBeenCalledOnce();
+
+    const predecessor = await read(historyLane, true);
+    // Replace the worker before any successor reply, retaining its delayed artifact cleanup.
+    const releasePredecessors = observed.replaceWorkers.map((replace) => replace());
+    await predecessor.close();
+    expect(observed.rotate).toHaveBeenCalledTimes(2);
+    expect(observed.closeResources).toHaveBeenCalledOnce();
+
+    const successor = await read(historyLane, true);
+    await Promise.all(releasePredecessors.map((release) => release()));
+    await successor.close();
+    expect(observed.closeResources).toHaveBeenCalledTimes(2);
+    expect(observed.rotate).toHaveBeenCalledTimes(2);
+  } finally {
+    if (!descriptor) {
+      Reflect.deleteProperty(process.versions, "bun");
+    }
+  }
+});
 
 it("retains reads dispatched after a cleanup request", async () => {
   const request = input();

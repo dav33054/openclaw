@@ -27,6 +27,7 @@ import {
   runShardPlans,
 } from "../../scripts/ci-run-node-test-shard.mts";
 import { encodeNodeTestGroups } from "../../scripts/lib/ci-node-test-groups-codec.mts";
+import nativeBunQualification from "../../scripts/lib/ci-test-native-bun-qualification.json" with { type: "json" };
 import {
   ciTestShardRequiresBun,
   resolveCiTestRuntimeSelections,
@@ -39,6 +40,29 @@ import * as groupOwner from "../../scripts/vitest-process-group.mts";
 import { createDeferred, withTestTimeout } from "../helpers/promise.js";
 import { getUnitFastIsolatedTestFiles } from "../vitest/vitest.unit-fast-paths.mjs";
 
+const nativeQualificationFixtures = vi.hoisted(() => ({
+  first: "packages/markdown-core/src/chunk-text.test.ts",
+  second: "src/utils/chunk-items.test.ts",
+  helperTest: "src/agents/embedded-agent-runner/run/compaction-timeout.test.ts",
+  helper: "src/agents/test-helpers/agent-message-fixtures.ts",
+  setup: "test/setup.env.ts",
+}));
+
+vi.mock("../../scripts/lib/ci-test-native-bun-qualification.json", async () => {
+  const { createHash } = await import("node:crypto");
+  const { readFileSync: readQualificationSource } = await import("node:fs");
+  const hash = (file: string) =>
+    createHash("sha256").update(readQualificationSource(file)).digest("hex");
+  const { first, second, helperTest, helper, setup } = nativeQualificationFixtures;
+  return {
+    default: {
+      setup: { [setup]: hash(setup) },
+      tests: Object.fromEntries([first, second, helperTest].map((file) => [file, hash(file)])),
+      helpers: { [helperTest]: { [helper]: hash(helper) } },
+    },
+  };
+});
+
 vi.mock("node:child_process", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:child_process")>()),
 }));
@@ -48,7 +72,9 @@ vi.mock("node:fs/promises", async (importOriginal) => ({
 
 const scratchDirs: string[] = [];
 const bunConfig = "test/vitest/vitest.unit-fast.config.ts";
-const bunTarget = "packages/markdown-core/src/chunk-text.test.ts";
+const bunTarget = nativeQualificationFixtures.first;
+const vitestBunTarget = "src/agents/sandbox/docker.execDockerRaw.enoent.test.ts";
+const nativeBunTarget = nativeQualificationFixtures.second;
 const nodeTarget = "test/scripts/update-restart-module-outcome.test.ts";
 const agentsSupportConfig = "test/vitest/vitest.agents-support.config.ts";
 const worktreeRecoveryTarget = "src/agents/worktrees/service.removal-recovery.test.ts";
@@ -240,7 +266,7 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
     async (policy) => {
       vi.spyOn(groupOwner, "shouldUseDetachedVitestProcessGroup").mockReturnValue(true);
       const bunFile = "ui/src/pages/chat/chat-pane-history.test.ts";
-      const nodeFile = "ui/src/pages/usage/usage-page-details.test.ts";
+      const nodeFile = "ui/src/pages/usage/usage-page-retention.test.ts";
       const includePatterns = [bunFile, nodeFile];
       const seen: Array<{ runtime: string | undefined; membership?: string[] }> = [];
       await expect(
@@ -546,18 +572,27 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
   });
 
   it.each([
-    { node: 7, bun: 0, expected: 7 },
-    { node: 0, bun: 9, expected: 9 },
-    { node: 7, bun: 9, expected: 7 },
-  ])("finishes both runtimes and retains the first failure (node=$node, bun=$bun)", async (row) => {
-    const runChild = vi.fn(async (_args: string[], env: NodeJS.ProcessEnv) =>
-      env.OPENCLAW_VITEST_RUNTIME === "bun" ? row.bun : row.node,
+    { node: 7, bun: 0, native: 0, expected: 7 },
+    { node: 0, bun: 9, native: 0, expected: 9 },
+    { node: 7, bun: 9, native: 11, expected: 7 },
+    { node: 0, bun: 0, native: 11, expected: 11 },
+  ])("finishes every release engine and retains its first failure: %s", async (row) => {
+    const runChild = vi.fn(async (args: string[], env: NodeJS.ProcessEnv) =>
+      args[0] === "--native-bun"
+        ? row.native
+        : env.OPENCLAW_VITEST_RUNTIME === "bun"
+          ? row.bun
+          : row.node,
     );
     await expect(
       runShardPlans(
         resolveShardPlans({
           OPENCLAW_NODE_TEST_GROUPS_JSON: JSON.stringify([
-            { configs: [bunConfig], shard_name: "eligible" },
+            {
+              configs: [bunConfig],
+              shard_name: "eligible",
+              includePatterns: [nodeTarget, vitestBunTarget, nativeBunTarget],
+            },
             { configs: ["later.config.ts"], shard_name: "later" },
           ]),
         }),
@@ -572,10 +607,15 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
     expect(runChild.mock.calls.map(([, env]) => env.OPENCLAW_VITEST_RUNTIME)).toEqual([
       "node",
       "bun",
+      "bun",
     ]);
     expect(
-      new Set(runChild.mock.calls.map(([, env]) => env.OPENCLAW_VITEST_FS_MODULE_CACHE_ROOT)).size,
+      new Set(
+        runChild.mock.calls.slice(0, 2).map(([, env]) => env.OPENCLAW_VITEST_FS_MODULE_CACHE_ROOT),
+      ).size,
     ).toBe(2);
+    expect(runChild.mock.calls[2]?.[0]).toEqual(["--native-bun", `./${nativeBunTarget}`]);
+    expect(runChild.mock.calls[2]?.[1].OPENCLAW_VITEST_FS_MODULE_CACHE_ROOT).toBeUndefined();
   });
 
   it("rejects an invalid runtime policy before scheduling any child", async () => {
@@ -599,23 +639,30 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
     async ({ policy, vitestArgs }) => {
       const skippedOnBun = "src/process/spawn-broker/cleanup.test.ts";
       const v8HeapTest = "src/infra/worker-task-pool.memory.test.ts";
+      const pluginRetentionTest = "src/plugins/runtime.retention.test.ts";
       const nodeHistoryBenchmark = "test/scripts/bench-session-history.test.ts";
       const nativeCompilerTest = "test/scripts/native-typescript.test.ts";
       const compilerGraphTest = "test/scripts/ts-topology.test.ts";
       const mixedCompilerTest = "src/plugin-sdk/provider-tools.test.ts";
-      const missingDockerTest = "src/agents/sandbox/docker.execDockerRaw.enoent.test.ts";
+      const bunVitestFiles = [
+        "packages/markdown-core/src/render-aware-chunking.test.ts",
+        "src/agents/code-mode-node.test.ts",
+        vitestBunTarget,
+      ];
       const nodeFiles = [
         skippedOnBun,
         v8HeapTest,
-        "src/plugins/runtime.retention.test.ts",
-        "src/agents/code-mode-node.test.ts",
+        pluginRetentionTest,
         nodeHistoryBenchmark,
         nativeCompilerTest,
         compilerGraphTest,
         mixedCompilerTest,
       ];
-      const bunFiles = [bunTarget, missingDockerTest];
-      const includePatterns = [...bunFiles, ...nodeFiles];
+      const nativeFiles = vitestArgs.length ? [] : [bunTarget, nativeBunTarget];
+      const bunFiles = nativeFiles.length
+        ? bunVitestFiles
+        : [bunTarget, ...bunVitestFiles, nativeBunTarget].toSorted();
+      const includePatterns = [bunTarget, ...bunVitestFiles, nativeBunTarget, ...nodeFiles];
       const shard = {
         configs: [bunConfig],
         includePatterns,
@@ -639,13 +686,17 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
             env: { OPENCLAW_CI_TEST_RUNTIME_POLICY: policy },
             scratchDir: makeScratchDir(),
             runChild: async (args, env, label, timing) => {
-              expect(args).toEqual([
-                bunConfig,
-                ...(vitestArgs.length ? ["--", ...vitestArgs] : []),
-              ]);
+              const native = label.startsWith("bun-native:");
+              expect(args).toEqual(
+                native
+                  ? ["--native-bun", ...nativeFiles.map((file) => `./${file}`)]
+                  : [bunConfig, ...(vitestArgs.length ? ["--", ...vitestArgs] : [])],
+              );
               seen.push({
                 runtime: env.OPENCLAW_VITEST_RUNTIME,
-                includes: JSON.parse(readFileSync(env.OPENCLAW_VITEST_INCLUDE_FILE!, "utf8")),
+                includes: native
+                  ? args.slice(1).map((file) => file.slice(2))
+                  : JSON.parse(readFileSync(env.OPENCLAW_VITEST_INCLUDE_FILE!, "utf8")),
                 label,
                 timing,
               });
@@ -663,6 +714,16 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
           timing: `${nodePrefix}partition`,
         },
         { runtime: "bun", includes: bunFiles, label: "bun:partition", timing: "bun:partition" },
+        ...(nativeFiles.length
+          ? [
+              {
+                runtime: "bun",
+                includes: nativeFiles,
+                label: "bun-native:partition",
+                timing: "bun-native:partition",
+              },
+            ]
+          : []),
       ]);
       expect(new Set(seen.flatMap(({ includes }) => includes))).toEqual(new Set(includePatterns));
     },
@@ -722,10 +783,10 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
       ),
     ).toEqual([
       {
-        runtime: "node",
+        runtime: "bun",
         includePatterns: ["packages/markdown-core/src/render-aware-chunking.test.ts"],
       },
-      { runtime: "bun", includePatterns: [bunTarget] },
+      { runtime: "bun", engine: "bun-test", files: [bunTarget] },
     ]);
     expect(
       resolveCiTestRuntimeSelections(
@@ -733,6 +794,91 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
         "bun-compatible",
       ),
     ).toEqual([{ runtime: "node" }]);
+    expect(
+      resolveCiTestRuntimeSelections(
+        {
+          configs: [bunConfig],
+          includePatterns: ["src/utils/{chunk-items,not-a-real-test}.test.ts"],
+        },
+        "bun-compatible",
+      ),
+    ).toEqual([{ runtime: "bun", engine: "bun-test", files: [nativeBunTarget] }]);
+  });
+
+  it("keeps exact native admission and Vitest-only arguments separate", () => {
+    const selection = { targets: [nativeBunTarget] };
+    expect(resolveCiTestRuntimeSelections(selection, "node")).toEqual([{ runtime: "node" }]);
+    expect(resolveCiTestRuntimeSelections(selection, "dual")).toEqual([
+      { runtime: "node" },
+      { runtime: "bun", engine: "bun-test", files: [nativeBunTarget] },
+    ]);
+    expect(ciTestShardRequiresBun(selection, "bun-compatible")).toBe(true);
+    for (const vitestArgs of [
+      ["--testNamePattern=(?!)"],
+      ["--maxWorkers=1"],
+      ["--testTimeout=120000"],
+      ["--hookTimeout=180000"],
+      [`--exclude=${nativeBunTarget}`],
+    ]) {
+      expect(
+        resolveCiTestRuntimeSelections({ ...selection, vitestArgs }, "bun-compatible"),
+      ).toEqual([{ runtime: "bun" }]);
+    }
+    expect(
+      resolveCiTestRuntimeSelections(
+        {
+          targets: [nativeBunTarget, vitestBunTarget],
+        },
+        "bun-compatible",
+      ),
+    ).toEqual([{ runtime: "bun" }]);
+    expect(
+      resolveCiTestRuntimeSelections(
+        {
+          configs: [bunConfig],
+          includePatterns: ["src/infra/plain-object.test.ts"],
+        },
+        "bun-compatible",
+      ),
+    ).toEqual([{ runtime: "bun", includePatterns: ["src/infra/plain-object.test.ts"] }]);
+  });
+
+  it("keeps changed qualification inputs on Vitest without dropping their coverage", () => {
+    const cwd = makeScratchDir();
+    const { helperTest, helper, setup } = nativeQualificationFixtures;
+    const files = [bunTarget, helperTest, nativeBunTarget];
+    const copyInput = (file: string) => {
+      mkdirSync(path.dirname(path.join(cwd, file)), { recursive: true });
+      writeFileSync(path.join(cwd, file), readFileSync(file));
+    };
+    for (const file of [...Object.keys(nativeBunQualification.setup), helper, ...files]) {
+      copyInput(file);
+    }
+    const selection = { configs: [bunConfig], includePatterns: files };
+    expect(resolveCiTestRuntimeSelections(selection, "bun-compatible", cwd)).toEqual([
+      { runtime: "bun", engine: "bun-test", files },
+    ]);
+    writeFileSync(path.join(cwd, "src/utils/chunk-items.ts"), "export const changed = true;\n");
+    expect(resolveCiTestRuntimeSelections(selection, "bun-compatible", cwd)).toEqual([
+      { runtime: "bun", engine: "bun-test", files },
+    ]);
+    writeFileSync(path.join(cwd, nativeBunTarget), `${readFileSync(nativeBunTarget, "utf8")}\n`);
+    expect(resolveCiTestRuntimeSelections(selection, "dual", cwd)).toEqual([
+      { runtime: "node" },
+      { runtime: "bun", includePatterns: [nativeBunTarget] },
+      { runtime: "bun", engine: "bun-test", files: [bunTarget, helperTest] },
+    ]);
+    writeFileSync(path.join(cwd, helper), "// changed fixture helper\n");
+    expect(resolveCiTestRuntimeSelections(selection, "dual", cwd)).toEqual([
+      { runtime: "node" },
+      { runtime: "bun", includePatterns: [helperTest, nativeBunTarget] },
+      { runtime: "bun", engine: "bun-test", files: [bunTarget] },
+    ]);
+    writeFileSync(path.join(cwd, setup), "// changed setup\n");
+    expect(resolveCiTestRuntimeSelections(selection, "dual", cwd)).toEqual([
+      { runtime: "node" },
+      { runtime: "bun", includePatterns: files },
+    ]);
   });
 
   it.each(["bun-compatible", "dual"] as const)(
@@ -984,7 +1130,7 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
       vi.spyOn(groupOwner, "shouldUseDetachedVitestProcessGroup").mockReturnValue(true);
       const seen: string[] = [];
       let receiptFile: string | undefined;
-      const nodeFile = "ui/src/pages/usage/usage-page-details.test.ts";
+      const nodeFile = "ui/src/pages/usage/usage-page-retention.test.ts";
       const bunFile = "ui/src/pages/chat/chat-pane-history.test.ts";
       await expect(
         runShardPlans([{ kind: "group", name: "ui", plan: { configs: ["ui/vitest.config.ts"] } }], {
@@ -997,8 +1143,8 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
                 readFileSync(env.OPENCLAW_VITEST_POST_SHARD_INCLUDE_FILE!, "utf8"),
               );
               expect(included).toEqual([
-                "ui/src/pages/chat/chat-pane-retained-presentation.test.ts",
-                "ui/src/pages/chat/chat-thread.test.ts",
+                "ui/src/pages/chat/chat-pane-retention.test.ts",
+                "ui/src/pages/chat/chat-thread-retention.test.ts",
                 nodeFile,
               ]);
               return 0;
@@ -1778,7 +1924,7 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
     },
   );
 
-  it("keeps Bun timings separate from Node membership timing spans", async () => {
+  it("keeps native Bun, Bun Vitest and Node membership timing spans separate", async () => {
     const timingKey =
       "agentic-agents-support#selector-2-aaaa#generation-bbbb#part-1-of-2#include-1-cccc";
     const lines: string[] = [];
@@ -1798,9 +1944,12 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
         runChild: async (_args, _childEnv, label, spanKey) => {
           lines.push(`2026-08-27T23:00:00Z [shard:${spanKey}] begin`);
           lines.push(`2026-08-27T23:00:01Z [shard:${label}] child output`);
-          lines.push(
-            `2026-08-27T23:00:${spanKey.startsWith("bun:") ? "03" : "10"}Z [shard:${spanKey}] end (exit 0)`,
-          );
+          const seconds = spanKey.startsWith("bun-native:")
+            ? "02"
+            : spanKey.startsWith("bun:")
+              ? "03"
+              : "10";
+          lines.push(`2026-08-27T23:00:${seconds}Z [shard:${spanKey}] end (exit 0)`);
           return 0;
         },
         scratchDir: makeScratchDir(),
@@ -1819,6 +1968,9 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
     expect(refitTestTimings(runs).timings.compactGroupSeconds.blacksmith[`bun:${timingKey}`]).toBe(
       3,
     );
+    expect(
+      refitTestTimings(runs).timings.compactGroupSeconds.blacksmith[`bun-native:${timingKey}`],
+    ).toBe(2);
   });
 
   it.each([

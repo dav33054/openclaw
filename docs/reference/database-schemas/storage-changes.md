@@ -983,14 +983,29 @@ Fleet registry reads use a separate read-only worker and remain noncreating;
 listing cells does not join Gateway writable lifecycle admission. The existing
 read owner retains inherited snapshot and disposable-source scopes until the
 task acknowledges native reader cleanup. Fixed reads share two execution workers
-with the existing pending-task and captured-input byte limits. On Node, each worker
-retains independent live read-only connections for 30 minutes without use, checking
+with the existing pending-task and captured-input byte limits. On Node and Bun,
+fixed reads of the live database reuse independent read-only connections, checking
 physical file identity and schema admission on each read. Results are never cached.
-Path-specific retirement joins acknowledged reader cleanup in every worker before
-releasing file custody. Private snapshot readers still close before task completion.
-A completed reply retains its worker slot until acceptance.
-On Bun, every successful task also retires its worker because closing a reader
-can retain native statements; the same task and worker bounds still apply.
+Node retires idle connections after 30 minutes; Bun delegates idle cleanup to the
+pool's existing 30-minute worker retirement. Private snapshot readers still close
+before task completion. A completed reply retains its worker slot until acceptance.
+The shared-state owner joins Bun worker exit after a native connection closes,
+including identity replacement, private snapshot cleanup, and quarantine admission.
+Bun path-specific resource closes also rotate the shared-state pool. Node closes
+acknowledged reader resources without retiring healthy execution workers.
+
+History, projection, and maintenance readers separately qualify direct native close
+through the shared SQLite capability owner. Each executing Bun worker checks its
+loaded binding once using a private shared in-memory database. The check first
+proves that two connections share the database, then keeps unused, read, and
+partially iterated statements reachable while closing their connection. Confirmed
+destruction permits successful discovery and idle database cleanup without
+discarding the worker's loaded code. Each pool binds that observation to its current
+worker generation; replacements must establish it again. Older Bun versions and
+uncertain probe results retain worker retirement, including the probe's private
+native resources. Active reads, failed discovery, and uncertain native cleanup
+retain worker retirement and file custody. These execution changes do not alter
+schemas, stored data, admission, or update behavior.
 The parent selects SQLite through the existing library owner before starting workers,
 so replacement workers inherit the completed process-wide selection.
 Failed replies and cancelled tasks retire their exact worker without stopping

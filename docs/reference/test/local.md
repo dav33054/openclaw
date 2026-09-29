@@ -112,7 +112,7 @@ OPENCLAW_CI_TEST_RUNTIME_POLICY=dual \
 node --import tsx scripts/ci-run-node-test-shard.mts
 ```
 
-The Bun partition deliberately excludes two whole GC-sensitive files, which
+The Bun partition excludes whole files with GC-sensitive assertions, which
 remain covered by Node. Running the complete UI config directly with
 `OPENCLAW_VITEST_RUNTIME=bun` also runs those currently incompatible assertions.
 

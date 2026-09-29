@@ -21,17 +21,21 @@ it.each(["batch", "cron"] as const)(
       const rotate = pool.rotate.bind(pool);
       const closeResources = pool.closeResources.bind(pool);
       let cleanupCalled = false;
-      const cleanup = process.versions.bun
-        ? vi.spyOn(pool, "rotate").mockImplementation(async () => {
-            await rotate();
-            cleanupCalled = true;
-            invalidateRegisteredAgentDatabasesMemo({ env });
-          })
-        : vi.spyOn(pool, "closeResources").mockImplementation(async (key) => {
-            await closeResources(key);
-            cleanupCalled = true;
-            invalidateRegisteredAgentDatabasesMemo({ env });
-          });
+      const invalidateAfterCleanup = () => {
+        if (cleanupCalled) {
+          return;
+        }
+        cleanupCalled = true;
+        invalidateRegisteredAgentDatabasesMemo({ env });
+      };
+      const rotateCleanup = vi.spyOn(pool, "rotate").mockImplementation(async () => {
+        await rotate();
+        invalidateAfterCleanup();
+      });
+      const resourceCleanup = vi.spyOn(pool, "closeResources").mockImplementation(async (key) => {
+        await closeResources(key);
+        invalidateAfterCleanup();
+      });
       try {
         const pending =
           kind === "batch"
@@ -50,7 +54,8 @@ it.each(["batch", "cron"] as const)(
         await expect(pending).rejects.toThrow("registry changed");
         expect(cleanupCalled).toBe(true);
       } finally {
-        cleanup.mockRestore();
+        rotateCleanup.mockRestore();
+        resourceCleanup.mockRestore();
       }
     });
   },

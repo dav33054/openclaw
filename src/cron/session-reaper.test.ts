@@ -414,19 +414,33 @@ describe("sweepCronRunSessions", () => {
       }),
     ).toMatchObject({ sessionId: "ops-run" });
 
-    expect(
-      await sweepCronRunSessionsImpl({
-        agentId: "main",
-        sessionStorePath: exactStorePath,
-        nowMs: now,
-        log,
-      }),
-    ).toEqual({ swept: true, pruned: 0 });
+    let keepsMaintenanceWorker = !process.versions.bun;
+    const runMaintenanceRead = maintenanceLane.pool.run.bind(maintenanceLane.pool);
+    const maintenanceRead = vi
+      .spyOn(maintenanceLane.pool, "run")
+      .mockImplementation(async (...args) => {
+        const reply = await runMaintenanceRead(...args);
+        keepsMaintenanceWorker =
+          !process.versions.bun || (reply.ok && reply.sqliteCloseFinalizesStatements === true);
+        return reply;
+      });
+    try {
+      expect(
+        await sweepCronRunSessionsImpl({
+          agentId: "main",
+          sessionStorePath: exactStorePath,
+          nowMs: now,
+          log,
+        }),
+      ).toEqual({ swept: true, pruned: 0 });
+    } finally {
+      maintenanceRead.mockRestore();
+    }
     const workersCreated = maintenanceLane.pool.getSnapshot().workersCreated;
     let foregroundRead:
       | ReturnType<typeof sessionEntryReader.readSessionEntriesFromStoreInWorker>
       | undefined;
-    if (!process.versions.bun) {
+    if (keepsMaintenanceWorker) {
       const closeResources = maintenanceLane.pool.closeResources.bind(maintenanceLane.pool);
       vi.spyOn(maintenanceLane.pool, "closeResources").mockImplementationOnce((key) => {
         const closing = closeResources(key);
@@ -446,7 +460,7 @@ describe("sweepCronRunSessions", () => {
     });
 
     expect(result).toEqual({ swept: true, pruned: 1 });
-    if (!process.versions.bun) {
+    if (keepsMaintenanceWorker) {
       expect(foregroundRead).toBeDefined();
       expect(await foregroundRead).toMatchObject({
         entries: [

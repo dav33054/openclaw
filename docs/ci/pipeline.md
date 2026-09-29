@@ -130,6 +130,29 @@ Linux test shards select Bun through `scripts/lib/ci-test-runtime.mts`. The
 ordinary and isolated unit-fast lanes partition their existing file inventories: files with known Bun
 failures or additional skips stay on Node, and the compatible remainder runs on
 Bun. Those Node files still execute; they are not excluded from CI.
+
+Bun test processes disable the Node-compatible bytecode cache because the pinned
+fork generates bytecode during Vitest teardown. Bun's transpiler cache and the
+Vitest transform cache remain available. Node orchestration, worker compilation,
+and Node test selections retain their existing cache settings.
+
+Audited synchronous ordinary unit-fast tests with no hooks use Bun's native test
+runner. The same runtime owner intersects their qualification data with the
+canonical inventory and each existing stripe's include patterns. The remaining
+compatible files keep Vitest on Bun. Native admission checks test, setup, and
+fixture-helper bytes; changed or unreadable inputs return the affected tests to
+Vitest without dropping coverage. Production sources remain free to change and
+are still exercised. Extra Vitest arguments, including cache-warming collection,
+retain the existing Vitest path.
+
+Native Bun receives explicit file paths, the existing hermetic environment setup,
+the repository tsconfig, and the shared test deadline. It disables automatic env
+file loading and runs one test process inside the existing plan and worker budget.
+The shared process owner retains output watchdogs, interruption handling, and
+joined descendant cleanup. Release validation runs the complete Node selection
+before the compatible Bun/Vitest and native Bun portions in that same slot;
+every result remains required. Native execution adds no CI jobs or worker fanout.
+
 The process lane runs `terminal-pty-bun.test.ts` on Bun and retains its other
 files on Node. Its native real-PTY block skips when the pinned Bun build lacks
 `Bun.Terminal.pause()` and `resume()`, as the current pin does. macOS and Linux
@@ -137,19 +160,19 @@ select the native PTY without Node only on builds with that capability, such as
 the OpenClaw Bun fork builds that also carry the macOS child-exit fix. Other Bun
 releases keep the Node helper, which requires an installed Node runtime and
 skips Bun's `node` shim when selecting it. Windows keeps `node-pty`.
+
 TypeScript compiler analysis suites also stay on Node because the synchronous
 native compiler API requires Node child-process pipe handles. This includes
 compiler assertions in mixed runtime suites; their cases remain enabled.
-The Node Code Mode executor suite also stays on Node: its warm-worker cleanup
-requires diagnostics-channel delivery to preserve sibling subscribers when a
-callback unsubscribes during publication. Bun can skip the next subscriber.
-The plugin runtime retention proof (`src/plugins/runtime.retention.test.ts`) also
-stays on Node: JavaScriptCore can keep a released successor registry alive past
-forced collections without any retaining path, so its WeakRef checks are
-nondeterministic on Bun.
+The Code Mode executor and Markdown chunking suites run with Vitest on Bun using
+the fork's diagnostics-channel and `Intl.Segmenter` fixes.
+Plugin runtime retention tests remain on Node after earlier fork builds failed
+retirement GC assertions in a complete stripe and focused replay. Their
+cases retain their original assertions and deadlines; this suite has not been
+qualified for Bun.
 The complete fake-timer lane also supports Bun. Control UI keeps its GC-sensitive
-retention proofs (`chat-pane-retained-presentation.test.ts`, `chat-thread.test.ts`,
-and `usage-page-details.test.ts`) on Node and runs the remaining files on Bun.
+retention proofs (`chat-pane-retention.test.ts`, `chat-thread-retention.test.ts`,
+and `usage-page-retention.test.ts`) on Node and runs the remaining files on Bun.
 The missing-Docker test also runs on Bun, using an empty executable directory
 instead of an empty `PATH`, which Bun resolves through its default search path.
 Other families retain Node until they pass on the pinned fork within their
@@ -175,7 +198,8 @@ the same module identity on both runtimes.
 
 The complete memory plugin config (`memory-lancedb` and `memory-wiki`) also
 supports Bun, with its existing isolated workers and database-worker exclusions.
-A paired Linux Testbox comparison with two workers passed the same 53 files,
+A paired Linux Testbox comparison on the preceding Bun `ddfce5d01` / WebKit
+`4429d113` build with two workers passed the same 53 files,
 474 tests, and one platform skip on each runtime. Bun reduced complete test-command
 wall time from 58.72s to 52.79s cold and from 43.51s to 38.68s with warm caches
 and reversed runtime order: 10–11% faster, with warm aggregate RSS near 3.94 GiB
@@ -202,8 +226,8 @@ files keep their original shard ownership. Compatible PR selections run Bun
 first and record Vitest's original shard inventory. After successful, joined
 completion, a shard with no Node-only files omits that Node process. Missing or
 invalid inventory evidence retains the Node run. Dual validation runs
-the complete UI selection on Node, then excludes only the usage detail file from Bun;
-Its assertions remain required on Node, with no added skips.
+the complete UI selection on Node, then excludes the three GC-sensitive files from Bun.
+Their assertions remain required on Node, with no added skips.
 Partitions without browser files retain browser discovery for native sharding
 but omit Chromium version probing and Playwright's speculative browser startup.
 
@@ -233,21 +257,25 @@ functions remain valid after the original cache buffer is garbage-collected.
 It also keeps allocator ownership during zero-time event-loop polls, while
 retaining the idle handoff for polls that can block.
 
-The pinned build pairs Bun `6b9148b17a6df4d02776fbf4aeb0c874e2ff955a` with WebKit
-`4429d11361a5f1680a9e57884ebc1941c2cc7e48`, containing the
+The pinned build pairs Bun `9ebee1257c3bcf6ca9764f408c2432ad9e8934b0` with WebKit
+`440fe0f8519ea493007a5161813e45b2aeaca2c5`, containing the
 `caa5d805b646edc59ca0d12b49a7a574f942dedb` FTL backport.
 The backport preserves string bounds checks through FTL dead-code elimination,
 fixing the CSS tokenizer's end-of-input loop.
 The fork keeps the lifecycle-script `node` shim in a per-user directory, with a
-private fallback when that directory is unusable. This lets several accounts on
-one host run Bun installs without Node.
+private fallback when that directory is unusable. `NODE` and `npm_node_execpath`
+point to the executable in either location. This lets several accounts on one
+host run Bun installs without Node. The same build retains the tsconfig,
+diagnostics-channel, inspector/GC, and `Intl.Segmenter` fixes.
 Its prerelease tag includes both source revisions because `Bun.revision` alone
 does not distinguish builds linked against different WebKit revisions.
 
-Node continues to own orchestration, builds, compiler preparation, and cleanup;
-Vitest and its workers use the selected runtime. Bun and Node have separate
-transform-cache directories and timing identities. Either runtime failing fails
-the job. This adds no matrix rows or runner registrations.
+Node continues to own orchestration, builds, compiler preparation, and cleanup.
+Vitest and its workers use the selected runtime; qualified native selections use
+`bun test` and skip Vitest compilation and transform caching. Bun/Vitest, native
+Bun, and Node have separate timing identities, and the two Vitest runtimes keep
+separate transform-cache directories. Any test engine failing fails the job.
+This adds no matrix rows or runner registrations.
 
 `NODE_OPTIONS`, where configured, limits Node heaps; the UI lane retains Node's
 default heap limit. Bun does not use that V8 limit. Compare observed memory use alongside elapsed time before admitting more
