@@ -85,12 +85,15 @@ import {
   resolveSystemRunExecArgv,
 } from "./invoke-system-run-allowlist.js";
 import {
+  publishSystemRunCompletion,
+  type SystemRunExecutionContext,
+} from "./invoke-system-run-completion.js";
+import {
   buildEnvOverrideRejectionMessage,
   hardenApprovedExecutionPaths,
 } from "./invoke-system-run-plan.js";
 import type {
   ExecEventPayload,
-  ExecFinishedResult,
   ExecFinishedEventParams,
   RunResult,
   SkillBinsProvider,
@@ -113,13 +116,6 @@ type SystemRunDeniedReason =
   | "companion-unavailable"
   | "cwd-unavailable"
   | "permission:screenRecording";
-
-type SystemRunExecutionContext = {
-  sessionKey: string;
-  runId: string;
-  commandText: string;
-  suppressNotifyOnExit: boolean;
-};
 
 type SystemRunParsePhase = {
   argv: string[];
@@ -323,25 +319,6 @@ async function sendSystemRunDenied(
   });
 }
 
-async function sendSystemRunCompleted(
-  opts: Pick<HandleSystemRunInvokeOptions, "sendExecFinishedEvent" | "sendInvokeResult">,
-  execution: SystemRunExecutionContext,
-  result: ExecFinishedResult,
-  payloadJSON: string,
-) {
-  await opts.sendExecFinishedEvent({
-    sessionKey: execution.sessionKey,
-    runId: execution.runId,
-    commandText: execution.commandText,
-    result,
-    suppressNotifyOnExit: execution.suppressNotifyOnExit,
-  });
-  await opts.sendInvokeResult({
-    ok: true,
-    payloadJSON,
-  });
-}
-
 function argvArraysMatch(left: readonly string[] | undefined, right: readonly string[]): boolean {
   return (
     left !== undefined &&
@@ -386,6 +363,7 @@ async function parseSystemRunPhase(
   const runId = normalizeOptionalString(opts.params.runId) ?? crypto.randomUUID();
   const cwd = normalizeOptionalString(opts.params.cwd);
   const suppressNotifyOnExit = opts.params.suppressNotifyOnExit === true;
+  const notifyOnExit = opts.params.notifyOnExit !== false;
   const approvalSource = opts.params.approvalSource;
   if (
     approvalSource != null &&
@@ -465,7 +443,7 @@ async function parseSystemRunPhase(
     agentId,
     sessionKey,
     runId,
-    execution: { sessionKey, runId, commandText, suppressNotifyOnExit },
+    execution: { sessionKey, runId, commandText, suppressNotifyOnExit, notifyOnExit },
     approvalDecision,
     approvalSource: approvalSource ?? undefined,
     delayedApprovalPolicySnapshot,
@@ -1016,7 +994,7 @@ async function executeSystemRunPhase(
       return;
     } else {
       const result: ExecHostRunResult = response.payload;
-      await sendSystemRunCompleted(opts, phase.execution, result, JSON.stringify(result));
+      await publishSystemRunCompletion(opts, phase.execution, result, JSON.stringify(result));
       return;
     }
   }
@@ -1133,7 +1111,7 @@ async function executeSystemRunPhase(
     return;
   }
   applyOutputTruncation(result);
-  await sendSystemRunCompleted(
+  await publishSystemRunCompletion(
     opts,
     phase.execution,
     result,

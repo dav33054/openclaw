@@ -649,6 +649,7 @@ export async function executeNodeHostCommand(
     approvalDecision: inlineApprovalSource ? null : inlineApprovalDecision,
     approvalSource: inlineApprovalSource,
     runId: inlineApprovalId,
+    suppressNotifyOnExit: true,
     notifyOnExit: params.notifyOnExit,
     systemRunPlan: prepared.plan,
   });
