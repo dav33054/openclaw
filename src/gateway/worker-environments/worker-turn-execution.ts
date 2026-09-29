@@ -22,6 +22,7 @@ import {
 } from "../../infra/active-node-context.js";
 import { registerAgentRunDelegatedAuthorityClosedHandler } from "../../infra/agent-run-registry.js";
 import { redactSensitiveText } from "../../logging/redact.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { buildPersistedUserTurnMessage } from "../../sessions/user-turn-transcript.js";
 import { prepareSkillResourceDelivery } from "../../skills/runtime/resources.js";
 import { parseWorkerLaunchPlan } from "../../worker/launch-descriptor.js";
@@ -33,7 +34,10 @@ import {
 } from "./admission.js";
 import { sameWorkerSessionTurnClaim } from "./placement-record.js";
 import { prepareWorkerDesktopLaunchPlan } from "./worker-desktop-launch-plan.js";
-import { prepareWorkerGitHubBinding } from "./worker-github-binding.js";
+import {
+  prepareWorkerGitHubBindingGrant,
+  type WorkerGitHubBindingGrant,
+} from "./worker-github-binding.js";
 import { registerWorkerSkillAuthoring } from "./worker-skill-authoring.js";
 import { waitForTurnOperation } from "./worker-turn-admission.js";
 import {
@@ -57,6 +61,8 @@ import {
   recoverWorkspaceBeforeTurn,
   workerWorkspaceFailure,
 } from "./workspace-result-finalize.js";
+
+const log = createSubsystemLogger("gateway/worker-turn");
 
 export async function executeWorkerTurn(
   params: Omit<Parameters<typeof executeRemoteExecTurn>[0], "environments" | "runLocal"> & {
@@ -90,13 +96,6 @@ export async function executeWorkerTurn(
     );
   }
   await recoverWorkspaceBeforeTurn(params);
-  const github = await prepareWorkerGitHubBinding({
-    sessionId: placement.sessionId,
-    sessionKey: placement.sessionKey,
-    agentId: placement.agentId,
-    assertCurrent: () => params.placements.validateTurnClaim(params.turnClaim),
-  });
-
   const startedAt = Date.now();
   await turn.onExecutionStarted?.({ lifecycleGeneration: turn.lifecycleGeneration });
   params.assertRunCurrent?.();
@@ -228,21 +227,26 @@ export async function executeWorkerTurn(
       launchToolNames,
     });
   params.placements.authorizeWorkerTurnTools(params.turnClaim, toolAuthority.allowedToolNames);
-  const { operationalRunInstance, runtimeIdentity, assertActive, takeFinishingOutcome } =
-    await prepareWorkerAgentRuntimeIdentity({
-      agentId: placement.agentId,
-      runtimeInstanceId: placement.environmentId,
-      placements: params.placements,
-      sessionKey: placement.sessionKey,
-      sessionTarget: transcriptTarget,
-      promptCacheContext: {
-        boundaryCount: manager.getBoundaryCount(),
-        promptCacheKey: turn.promptCacheKey,
-      },
-      assertSourceCurrent,
-      turn,
-      turnClaim: params.turnClaim,
-    });
+  const {
+    operationalRunInstance,
+    runtimeIdentity,
+    operatorAuthority,
+    assertActive,
+    takeFinishingOutcome,
+  } = await prepareWorkerAgentRuntimeIdentity({
+    agentId: placement.agentId,
+    runtimeInstanceId: placement.environmentId,
+    placements: params.placements,
+    sessionKey: placement.sessionKey,
+    sessionTarget: transcriptTarget,
+    promptCacheContext: {
+      boundaryCount: manager.getBoundaryCount(),
+      promptCacheKey: turn.promptCacheKey,
+    },
+    assertSourceCurrent,
+    turn,
+    turnClaim: params.turnClaim,
+  });
   preparedComputer?.bind(operationalRunInstance, {
     authority: runtimeIdentity.approvalAuthority,
     assertCurrent: assertActive,
@@ -266,6 +270,7 @@ export async function executeWorkerTurn(
     }
   });
   let revokeSkillAuthoring: (() => void) | undefined;
+  let githubGrant: WorkerGitHubBindingGrant | undefined;
   try {
     const isAuthorized = () => {
       try {
@@ -282,6 +287,15 @@ export async function executeWorkerTurn(
         return false;
       }
     };
+    githubGrant = await prepareWorkerGitHubBindingGrant({
+      operatorAuthority,
+      requireOperatorAuthority: true,
+      sessionId: placement.sessionId,
+      sessionKey: placement.sessionKey,
+      agentId: placement.agentId,
+      assertCurrent: isAuthorized,
+    });
+    const github = githubGrant?.binding;
     if (turn.skillLibraryAuthoring && toolAuthority.allowedToolNames.includes("skill_workshop")) {
       if (!bootstrapReceipt.protocolFeatures.includes(WORKER_SKILL_WORKSHOP_FEATURE)) {
         throw new StaleWorkerBuildError();
@@ -635,5 +649,10 @@ export async function executeWorkerTurn(
     revokeSkillAuthoring?.();
     stopWatchingClaim();
     stopWatchingRun();
+    try {
+      await githubGrant?.revoke();
+    } catch {
+      log.warn("Worker GitHub token revocation failed; the installation token will expire.");
+    }
   }
 }

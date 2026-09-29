@@ -173,6 +173,11 @@ describe("worker launch descriptor", () => {
         remoteUrl: "https://github.com/openclaw/openclaw.git",
         gitAuthor: { name: "Worker Bot", email: "worker@example.test" },
       },
+      {
+        ...identity,
+        host: "fixture.ghe.com",
+        remoteUrl: "https://fixture.ghe.com/example/repo.git",
+      },
     ]) {
       descriptor.assignment.github = github;
       const parsed = parseWorkerLaunchDescriptor(structuredClone(descriptor));
@@ -218,6 +223,9 @@ describe("worker launch descriptor", () => {
         "https://github.com/openclaw/openclaw.git?token=x",
         "https://github.com/openclaw/openclaw.git\n",
       ].map((remoteUrl) => withBinding({ remoteUrl })),
+      withBinding({ host: "fixture.ghe.com", remoteUrl: "https://github.com/example/repo.git" }),
+      withBinding({ host: "Microsoft.ghe.com" }),
+      withBinding({ host: "microsoft..ghe.com" }),
       withBinding({ gitAuthor: { unexpected: true } }),
       withBinding({ remoteUrl: undefined }),
       withBinding({ gitAuthor: undefined }),

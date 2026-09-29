@@ -1,16 +1,23 @@
 /** Parse a GitHub remote in HTTPS, SSH URL, or scp-like form. */
-export function parseGitHubRemoteUrl(raw: string): { owner: string; repo: string } | null {
+export function parseGitHubRemoteUrl(
+  raw: string,
+  githubHost = "github.com",
+): { owner: string; repo: string } | null {
   const trimmed = raw.trim();
   let path: string | undefined;
-  const scpMatch = /^git@github\.com:(.+)$/i.exec(trimmed);
-  if (scpMatch) {
-    path = scpMatch[1];
+  const escapedHost = githubHost.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const scpMatch = new RegExp(`^([^@:/]+)@${escapedHost}:(.+)$`, "iu").exec(trimmed);
+  const gheUser = githubHost.toLowerCase().endsWith(".ghe.com")
+    ? githubHost.split(".")[0]?.toLowerCase()
+    : undefined;
+  if (scpMatch && ["git", gheUser].includes(scpMatch[1]?.toLowerCase())) {
+    path = scpMatch[2];
   } else {
     try {
       const url = new URL(trimmed);
       const protocolOk =
         url.protocol === "https:" || url.protocol === "http:" || url.protocol === "ssh:";
-      if (!protocolOk || url.hostname.toLowerCase() !== "github.com") {
+      if (!protocolOk || url.hostname.toLowerCase() !== githubHost.toLowerCase()) {
         return null;
       }
       path = url.pathname;
