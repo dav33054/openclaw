@@ -47,7 +47,7 @@ const RATE_LIMIT_RETRY_MESSAGE =
   "⚠️ The model request was rate-limited. Please try again in a few minutes.";
 const MODEL_CAPACITY_ERROR_RE = /\b(?:selected\s+)?model\s+(?:is\s+)?at capacity\b/i;
 const RATE_LIMIT_SPECIFIC_HINT_RE =
-  /\bmin(ute)?s?\b|\bhours?\b|\bseconds?\b|\btry again in\b|\bresets?\b|\bplan\b|\bquota\b/i;
+  /\bmin(ute)?s?\b|\bhours?\b|\bseconds?\b|\btry again in\b|\bresets?\b|\bplan\b|\bquota\b|\bshorten\b|\bfree[- ]tier\b/i;
 const CONTEXT_OVERFLOW_ERROR_HEAD_RE =
   /^(?:context overflow:|request_too_large\b|request size exceeds\b|request exceeds the maximum size\b|context length exceeded\b|maximum context length\b|prompt is too long\b|exceeds model context window\b)/i;
 const NON_ERROR_PROVIDER_PAYLOAD_MAX_LENGTH = 16_384;
@@ -76,6 +76,10 @@ export function formatBillingErrorMessage(
 
 const BILLING_ERROR_USER_MESSAGE = formatBillingErrorMessage();
 
+function withWarningPrefix(text: string): string {
+  return text.startsWith("⚠️") ? text : `⚠️ ${text}`;
+}
+
 function extractProviderRateLimitMessage(raw: string): string | undefined {
   const withoutPrefix = raw.replace(ERROR_PREFIX_RE, "").trim();
   const info = parseApiErrorInfo(raw) ?? parseApiErrorInfo(withoutPrefix);
@@ -95,7 +99,7 @@ function extractProviderRateLimitMessage(raw: string): string | undefined {
   ) {
     return undefined;
   }
-  return `⚠️ ${trimmed}`;
+  return withWarningPrefix(trimmed);
 }
 
 /** Render rate-limit versus overload copy from the canonical classified reason. */
@@ -368,7 +372,7 @@ function extractCodexUsageLimitErrorMessage(
     return undefined;
   }
   const truncated = message.length > 500 ? `${truncateUtf16Safe(message, 497)}...` : message;
-  return truncated.startsWith("⚠️") ? truncated : `⚠️ ${truncated}`;
+  return withWarningPrefix(truncated);
 }
 
 /** Render the reply surface's rate-limit copy, including structured cooldown context. */
@@ -396,12 +400,18 @@ export function renderRateLimitReplyCopy(params: {
     return BILLING_ERROR_USER_MESSAGE;
   }
   if (attempts.length === 0) {
-    if (params.reason === "rate_limit" && isPeriodicUsageLimitErrorMessage(params.message)) {
-      const providerMessage = renderSanitizedUserFacingText(
-        params.sanitizeText?.(params.message) ?? params.message,
-        { errorContext: true },
-      );
-      return providerMessage.startsWith("⚠️") ? providerMessage : `⚠️ ${providerMessage}`;
+    if (params.reason === "rate_limit") {
+      const sanitizedMessage = params.sanitizeText?.(params.message) ?? params.message;
+      if (isPeriodicUsageLimitErrorMessage(params.message)) {
+        const providerMessage = renderSanitizedUserFacingText(sanitizedMessage, {
+          errorContext: true,
+        });
+        return withWarningPrefix(providerMessage);
+      }
+      const specificHint = extractProviderRateLimitMessage(sanitizedMessage);
+      if (specificHint) {
+        return specificHint;
+      }
     }
     return RATE_LIMIT_RETRY_MESSAGE;
   }
