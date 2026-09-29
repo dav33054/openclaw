@@ -551,8 +551,8 @@ test.each(["admission", "commit"] as const)(
   },
 );
 
-test.each(["path", "root"] as const)(
-  "cancels queued cold reclamation before unrelated work settles during %s retirement",
+test.each(["path", "root", "replacement"] as const)(
+  "rejects queued cold reclamation after %s invalidation",
   async (retirement) => {
     const fixture = createFixture();
     await closeOpenClawAgentDatabaseByPathAsync(fixture.database.path);
@@ -588,6 +588,16 @@ test.each(["path", "root"] as const)(
         throw new Error("Expected reclamation to retain its original opening authority");
       }
       expect(assertCurrent).not.toThrow();
+      if (retirement === "replacement") {
+        const expectFilesUnchanged = fixture.replaceDatabaseFileWithCopy();
+        releaseQueue.resolve();
+        await holding;
+        await expect(request).rejects.toThrow(/identity.*changed|replaced/);
+        expect(spawned).toHaveLength(0);
+        expect(leasesFor(fixture)).toHaveLength(0);
+        expectFilesUnchanged();
+        return;
+      }
       closing =
         retirement === "path"
           ? closeOpenClawAgentDatabaseByPathAsync(fixture.database.path)

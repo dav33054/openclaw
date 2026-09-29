@@ -633,7 +633,7 @@ describe("sanitizeSessionHistory", () => {
       sessionId: TEST_SESSION_ID,
     });
     expect(roles(direct)).toEqual(["user", "user", "assistant"]);
-    expect(roles(bedrock)).toEqual(["user", "assistant"]);
+    expect(roles(bedrock)).toEqual(["user", "user", "assistant"]);
   });
 
   it("strips copied inbound metadata and drops emptied assistant turns before validation", async () => {
