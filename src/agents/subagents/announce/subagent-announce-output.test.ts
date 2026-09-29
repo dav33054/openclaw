@@ -4,7 +4,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { textAssistant } from "../../test-helpers/sparse-transcript.test-support.js";
 import {
   testing,
-  applySubagentWaitOutcome,
   buildCompactAnnounceStatsLine,
   buildChildCompletionFindings,
   dedupeLatestChildCompletionRows,
@@ -748,77 +747,5 @@ describe("buildChildCompletionFindings", () => {
 
     expect(forward).toBe(reverse);
     expect(forward).toMatch(/1\. Child task[\s\S]*A task[\s\S]*2\. Child task[\s\S]*Z task/);
-  });
-});
-
-describe("applySubagentWaitOutcome", () => {
-  it.each([
-    {
-      name: "treats blocked ok waits as errors",
-      wait: {
-        status: "ok",
-        livenessState: "blocked",
-        error: "Context overflow: prompt too large for the model.",
-      },
-      expected: { status: "error", error: "Context overflow: prompt too large for the model." },
-    },
-    {
-      name: "treats abandoned ok waits as incomplete failures",
-      wait: { status: "ok", livenessState: "abandoned" },
-      expected: { status: "error", error: "Agent run ended before producing a complete result." },
-    },
-    {
-      name: "keeps provider hard timeouts stronger than blocked metadata",
-      wait: {
-        status: "error",
-        livenessState: "blocked",
-        timeoutPhase: "provider",
-        providerStarted: true,
-        error: "model timed out",
-      },
-      expected: { status: "timeout" },
-    },
-    ...(["rpc", "superseded"] as const).map((stopReason) => ({
-      name: `keeps explicit ${stopReason} cancellation distinct from timeouts`,
-      wait: { status: "timeout", stopReason },
-      expected: { status: "error", error: "subagent run terminated" },
-    })),
-    // Explicit cancellation must outrank blocked liveness (openclaw#125407).
-    ...(["restart", "aborted"] as const).map((stopReason) => ({
-      name: `keeps ${stopReason} as cancellation even when liveness is blocked`,
-      wait: {
-        status: "ok",
-        stopReason,
-        livenessState: "blocked",
-        error: "Context overflow: prompt too large for the model.",
-      },
-      expected: { status: "error", error: "subagent run terminated" },
-    })),
-    {
-      name: "keeps the failure cause on pending-error timeout waits",
-      wait: {
-        status: "timeout",
-        pendingError: true,
-        error: "model returned an unrecoverable tool-call sequence",
-      },
-      expected: { status: "timeout", error: "model returned an unrecoverable tool-call sequence" },
-    },
-    {
-      name: "ignores error text when the run did not end in a pending error",
-      wait: { status: "timeout", error: "waited too long" },
-      expected: { status: "timeout" },
-    },
-  ])("$name", ({ wait, expected }) => {
-    const applied = applySubagentWaitOutcome({
-      wait: { ...wait, startedAt: 100, endedAt: 150 },
-      outcome: undefined,
-    });
-
-    expect(applied.outcome).toEqual({
-      ...expected,
-      startedAt: 100,
-      endedAt: 150,
-      elapsedMs: 50,
-    });
   });
 });

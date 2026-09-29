@@ -28,6 +28,17 @@ export async function handleSubagentsListAction(
   } else {
     lines.push(list.recent.map((entry) => entry.line).join("\n"));
   }
+  if (list.sharedCwdGroupTotal > 0) {
+    lines.push(
+      "",
+      `shared working directories (${list.sharedCwdGroups.length}/${list.sharedCwdGroupTotal} shown):`,
+    );
+    for (const group of list.sharedCwdGroups) {
+      lines.push(
+        `[cwd ${group.id}] ${group.runCount} runs: ${group.path} (sample: ${group.runIds.join(", ")})`,
+      );
+    }
+  }
 
   return commandReply(lines.join("\n"));
 }
