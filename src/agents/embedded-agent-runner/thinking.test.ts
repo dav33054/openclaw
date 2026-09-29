@@ -752,6 +752,47 @@ describe("wrapAnthropicStreamWithRecovery", () => {
     ]);
   });
 
+  const unsupportedThinkingParamMessage =
+    '"thinking.type.disabled" is not supported for this model. Use "thinking.type.between_tools" for the lowest thinking setting, or "thinking.type.adaptive" and "output_config.effort" to control thinking behavior.';
+
+  it.each([
+    {
+      name: "rawError",
+      detail: {
+        rawError: `HTTP 400: ${JSON.stringify({
+          type: "error",
+          error: { type: "invalid_request_error", message: unsupportedThinkingParamMessage },
+        })}`,
+      },
+    },
+    {
+      name: "errorBody",
+      detail: {
+        errorBody: JSON.stringify({
+          error: { message: unsupportedThinkingParamMessage, type: "invalid_request_error" },
+        }),
+      },
+    },
+  ])(
+    "does not retry request-shape errors naming a thinking parameter in $name",
+    async ({ detail }) => {
+      const providerError = Object.assign(new Error(genericizedProviderError), detail);
+      let callCount = 0;
+      const wrapped = wrapAnthropicStreamWithRecovery(
+        (() => {
+          callCount += 1;
+          return Promise.reject(providerError);
+        }) as Parameters<typeof wrapAnthropicStreamWithRecovery>[0],
+        { id: "test-session" },
+      );
+
+      await expect(
+        wrapped({} as never, { messages: thinkingHistory() } as never, {} as never),
+      ).rejects.toBe(providerError);
+      expect(callCount).toBe(1);
+    },
+  );
+
   it("does not retry non-thinking terminal stream-error events", async () => {
     let callCount = 0;
     const errorMessage = createTestAssistantMessage({
