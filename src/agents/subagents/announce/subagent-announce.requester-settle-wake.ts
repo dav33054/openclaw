@@ -207,7 +207,8 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
       currentSettledEntry,
     );
   }
-  if (settledBatch.length === 0) {
+  // A watched steer may reclaim a pending wake until its requester turn settles.
+  if (settledBatch.length === 0 || settledBatch.some((entry) => entry.requesterTurnRunId)) {
     return false;
   }
 
@@ -539,6 +540,7 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
       return settledBatch.every(
         (entry) =>
           currentRuns.includes(entry) &&
+          !entry.requesterTurnRunId &&
           entry.requesterSettleWake !== undefined &&
           entry.requesterSettleWake.rearmGeneration === currentRearmGeneration,
       );
