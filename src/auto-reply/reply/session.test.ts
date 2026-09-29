@@ -4054,6 +4054,8 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
       thinkingLevel: "high",
       reasoningLevel: "low",
       label: "telegram-priority",
+      category: "Channels",
+      pinnedAt: 123,
     } as const;
     const cases = await runExplicitResetCases({
       storePath,
@@ -4062,11 +4064,12 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
       entry: overrides,
     });
 
-    for (const { name, result } of cases) {
+    for (const { name, result, stored } of cases) {
       expect(result.isNewSession, name).toBe(true);
       expect(result.resetTriggered, name).toBe(true);
       expect(result.sessionId, name).toBe(existingSessionId);
       expectEntryFields(result.sessionEntry, overrides, name);
+      expectEntryFields(expectDefined(stored[sessionKey], "stored session"), overrides, name);
     }
   });
 
