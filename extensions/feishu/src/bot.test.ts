@@ -2158,6 +2158,10 @@ describe("handleFeishuMessage command authorization", () => {
     );
   });
 
+      }),
+    );
+  });
+
   it("delivers unique rich-post attachments in their original mixed-media order", async () => {
     mockShouldComputeCommandAuthorized.mockReturnValue(false);
     mockDownloadMessageResourceFeishu.mockImplementation(
