@@ -18,7 +18,7 @@ import { t } from "../../i18n/index.ts";
 import { copyToClipboard } from "../../lib/clipboard.ts";
 import { openEditor } from "../../lib/editor-links.ts";
 import { formatUiError } from "../../lib/format-error.ts";
-import { isGatewayMethodAdvertised } from "../../lib/gateway-methods.ts";
+import { canCallGatewayMethod } from "../../lib/gateway-methods.ts";
 import {
   KEYBOARD_SHORTCUT_COMBOS,
   matchesShortcutCombo,
@@ -129,7 +129,7 @@ export abstract class ChatPaneSessionMenu extends ChatPaneContext {
     client: GatewayBrowserClient,
     generation: number,
   ): Promise<void> {
-    if (!isGatewayMethodAdvertised(this.context.gateway.snapshot, "system.info")) {
+    if (!canCallGatewayMethod(this.context.gateway.snapshot, "system.info", "operator.read")) {
       return;
     }
     let platformRequest = headerPlatformByClient.get(client);

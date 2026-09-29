@@ -25,7 +25,7 @@ import { renderSettingsWorkspace } from "../../components/settings-workspace.ts"
 import { t } from "../../i18n/index.ts";
 import { currentConfigObject } from "../../lib/config/config-state-model.ts";
 import { isMissingOperatorReadScopeError } from "../../lib/gateway-errors.ts";
-import { isGatewayMethodAdvertised } from "../../lib/gateway-methods.ts";
+import { canCallGatewayMethod } from "../../lib/gateway-methods.ts";
 import { presenceConnectivitySignature } from "../../lib/nodes/inventory.ts";
 import {
   approveDevicePairing,
@@ -390,9 +390,8 @@ class DevicesPage extends OpenClawLightDomElement {
     const snapshot = this.gateway.snapshot;
     return (
       this.isConnected &&
-      snapshot?.phase === "connected" &&
       !this.systemInfoUnavailable &&
-      isGatewayMethodAdvertised(snapshot, "system.info") === true
+      canCallGatewayMethod(snapshot, "system.info", "operator.read")
     );
   }
 
