@@ -8,6 +8,7 @@ import {
   copyReplyPayloadMetadata,
   getReplyPayloadMetadata,
   hasReplyPayloadSpeechContent,
+  isExplicitlySilentReplyPayload,
   setReplyPayloadMetadata,
 } from "../reply-payload.js";
 import {
@@ -16,9 +17,7 @@ import {
   isSilentReplyPayloadText,
   isSilentReplyText,
   SILENT_REPLY_TOKEN,
-  startsWithSilentToken,
-  stripLeadingSilentToken,
-  stripSilentToken,
+  stripMixedSilentReplyTokens,
 } from "../tokens.js";
 import type { ReplyPayload } from "../types.js";
 import type {
@@ -94,7 +93,7 @@ export function normalizeReplyPayloadOutcome(
   if (!getReplyPayloadMetadata(payload)?.heartbeatReply) {
     const silentToken = opts.silentToken ?? SILENT_REPLY_TOKEN;
     if (text && isSilentReplyPayloadText(text, silentToken)) {
-      if (!hasContent("")) {
+      if (isExplicitlySilentReplyPayload(payload, silentToken)) {
         return suppress("silent");
       }
       text = "";
@@ -103,12 +102,9 @@ export function normalizeReplyPayloadOutcome(
     // token never leaks to end users.  If stripping leaves nothing, treat it as
     // silent just like the exact-match path above.  (#30916, #30955)
     if (text && !isSilentReplyText(text, silentToken)) {
-      const hasLeadingSilentToken = startsWithSilentToken(text, silentToken);
-      if (hasLeadingSilentToken) {
-        text = stripLeadingSilentToken(text, silentToken);
-      }
-      if (hasLeadingSilentToken || text.toLowerCase().includes(silentToken.toLowerCase())) {
-        text = stripSilentToken(text, silentToken);
+      const stripped = stripMixedSilentReplyTokens(text, silentToken);
+      if (stripped !== text) {
+        text = stripped;
         if (!hasContent(text)) {
           return suppress("silent");
         }
