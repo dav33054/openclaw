@@ -14,6 +14,7 @@ const {
   ingressMock,
   inboundRuntimeMock,
   settingsManagerMock,
+  realIngressFixture,
   realUrbitFixture,
 } = vi.hoisted(() => ({
   authenticateMock: vi.fn(),
@@ -58,6 +59,10 @@ const {
     load: vi.fn().mockResolvedValue({}),
     onChange: vi.fn().mockReturnValue(() => {}),
     startSubscription: vi.fn().mockResolvedValue(undefined),
+  },
+  realIngressFixture: {
+    enabled: false,
+    queue: null as unknown,
   },
   realUrbitFixture: {
     config: undefined as OpenClawConfig | undefined,
@@ -156,9 +161,21 @@ vi.mock("../settings.js", async (importOriginal) => ({
   createSettingsManager: vi.fn(() => settingsManagerMock),
 }));
 
-vi.mock("./ingress.js", () => ({
-  createTlonIngressMonitor: vi.fn(() => ingressMock),
-}));
+vi.mock("./ingress.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./ingress.js")>();
+  return {
+    ...actual,
+    createTlonIngressMonitor: vi.fn((options) =>
+      realIngressFixture.enabled
+        ? actual.createTlonIngressMonitor({
+            ...options,
+            queue: realIngressFixture.queue as never,
+            pollIntervalMs: 5,
+          })
+        : ingressMock,
+    ),
+  };
+});
 
 import { monitorTlonProvider } from "./index.js";
 
@@ -192,6 +209,8 @@ export function useTlonMonitorFixture() {
     realUrbitFixture.config = undefined;
     realUrbitFixture.url = "https://urbit.example.com";
     realUrbitFixture.client = null;
+    realIngressFixture.enabled = false;
+    realIngressFixture.queue = null;
   });
 
   return {
@@ -206,6 +225,7 @@ export function useTlonMonitorFixture() {
     ingressMock,
     inboundRuntimeMock,
     settingsManagerMock,
+    realIngressFixture,
     realUrbitFixture,
   };
 }
