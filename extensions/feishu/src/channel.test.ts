@@ -317,6 +317,7 @@ describe("feishuPlugin messaging", () => {
       }),
     ).toEqual({
       id: "oc_group_chat:topic:om_topic_root:sender:ou_topic_user",
+      threadId: "om_topic_root",
       baseConversationId: "oc_group_chat",
       parentConversationCandidates: ["oc_group_chat:topic:om_topic_root", "oc_group_chat"],
     });
@@ -327,6 +328,7 @@ describe("feishuPlugin messaging", () => {
       }),
     ).toEqual({
       id: "oc_group_chat:topic:om_topic_root",
+      threadId: "om_topic_root",
       baseConversationId: "oc_group_chat",
       parentConversationCandidates: ["oc_group_chat"],
     });
@@ -337,6 +339,7 @@ describe("feishuPlugin messaging", () => {
       }),
     ).toEqual({
       id: "oc_group_chat:topic:om_topic_root:sender:ou_topic_user",
+      threadId: "om_topic_root",
       baseConversationId: "oc_group_chat",
       parentConversationCandidates: ["oc_group_chat:topic:om_topic_root", "oc_group_chat"],
     });
@@ -874,7 +877,7 @@ describe("feishuPlugin actions", () => {
     );
   });
 
-  it("keeps an agent-initiated send top-level when the topic cannot be resolved", async () => {
+  it("keeps the topic target when it cannot be resolved, so the send owner decides", async () => {
     const stickerCfg = {
       channels: {
         feishu: {
@@ -885,7 +888,8 @@ describe("feishuPlugin actions", () => {
       },
     } satisfies OpenClawConfig;
     sendStickerFeishuMock.mockResolvedValueOnce({ messageId: "om_sticker", chatId: "oc_group_1" });
-    resolveFeishuReplyAnchorMessageIdMock.mockResolvedValueOnce(undefined);
+    // An unresolved lookup returns the topic id unchanged (see resolveFeishuReplyAnchorMessageId).
+    resolveFeishuReplyAnchorMessageIdMock.mockResolvedValueOnce("omt_topic_root");
     await feishuPlugin.actions!.handleAction!({
       channel: "feishu",
       action: "sticker",
@@ -895,8 +899,10 @@ describe("feishuPlugin actions", () => {
       sessionKey: "feishu:group:oc_group_1:topic:omt_topic_root",
       toolContext: { currentChannelId: "oc_group_1" },
     });
+    // Clearing the target here would post a new top-level topic; the send owner refuses that
+    // fallback for threaded replies, so the topic target must survive an unresolved lookup.
     expect(sendStickerFeishuMock).toHaveBeenCalledWith(
-      expect.objectContaining({ replyToMessageId: undefined, replyInThread: false }),
+      expect.objectContaining({ replyToMessageId: "omt_topic_root", replyInThread: true }),
     );
   });
 
