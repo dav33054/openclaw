@@ -30,7 +30,6 @@ import type {
   GatewayClient,
   GatewayRequestContext,
   GatewayRequestHandlerOptions,
-  RespondFn,
 } from "../../server-methods/types.js";
 import { bindSessionRowProjection } from "../../session-row-projection-access.js";
 import { resolveSessionMutationAuthorization } from "../../session-sharing.js";
@@ -45,6 +44,10 @@ import {
   type TalkConfigProjectionResponse,
 } from "./config-realtime.test-support.js";
 import { talkHandlers } from "./index.js";
+import {
+  definePreparedCallSessionTests,
+  type TalkHandlerCallOptions,
+} from "./prepared-call.test-support.js";
 import {
   expectRecordFields,
   expectRespondError,
@@ -308,15 +311,6 @@ function setSourceConfig(config: OpenClawConfig) {
     config,
   });
 }
-
-type TalkHandlerCallOptions = {
-  params: Record<string, unknown>;
-  respond: RespondFn;
-  config?: OpenClawConfig;
-  context?: unknown;
-  client?: unknown;
-  id?: string;
-};
 
 async function callTalkHandler(
   method: keyof typeof talkHandlers,
@@ -1925,6 +1919,8 @@ describe("talk.session unified handlers", () => {
       suppress: true,
     });
   });
+
+  definePreparedCallSessionTests({ callTalkHandler, mocks });
 
   it("creates and drives a realtime gateway-relay session through the unified API", async () => {
     const provider = {

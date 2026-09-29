@@ -235,6 +235,7 @@ export function sendTalkRealtimeRelayAudio(params: {
   if (typeof params.timestamp === "number" && Number.isFinite(params.timestamp)) {
     session.bridge.setMediaTimestamp(params.timestamp);
   }
+  session.noteClientAudioAdmitted?.();
 }
 
 export function acknowledgeTalkRealtimeRelayMark(params: {

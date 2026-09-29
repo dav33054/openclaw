@@ -21667,6 +21667,7 @@ public struct TalkSessionCloseParams: Codable, Sendable {
 
 public struct TalkSessionCreateParams: Codable, Sendable {
     public let sessionkey: String?
+    public let greeting: String?
     public let voicechangeid: String?
     public let capabilities: [String]?
     public let spawnedby: String?
@@ -21685,6 +21686,7 @@ public struct TalkSessionCreateParams: Codable, Sendable {
 
     public init(
         sessionkey: String? = nil,
+        greeting: String? = nil,
         voicechangeid: String? = nil,
         capabilities: [String]? = nil,
         spawnedby: String? = nil,
@@ -21702,6 +21704,7 @@ public struct TalkSessionCreateParams: Codable, Sendable {
         ttlms: Int? = nil)
     {
         self.sessionkey = sessionkey
+        self.greeting = greeting
         self.voicechangeid = voicechangeid
         self.capabilities = capabilities
         self.spawnedby = spawnedby
@@ -21721,6 +21724,7 @@ public struct TalkSessionCreateParams: Codable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case sessionkey = "sessionKey"
+        case greeting
         case voicechangeid = "voiceChangeId"
         case capabilities
         case spawnedby = "spawnedBy"
