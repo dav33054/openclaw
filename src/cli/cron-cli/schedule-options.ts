@@ -1,7 +1,10 @@
 // Shared schedule option resolver for cron create/edit commands.
 import { expectDefined } from "@openclaw/normalization-core/expect";
 import { parseStrictPositiveInteger } from "@openclaw/normalization-core/number-coercion";
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import {
+  normalizeOptionalString,
+  readNonBlankString,
+} from "@openclaw/normalization-core/string-coerce";
 import type { CronSchedule } from "../../cron/types.js";
 import { CronCliError } from "./cron-cli-error.js";
 import {
@@ -223,7 +226,7 @@ function normalizeScheduleOptions(options: ScheduleOptionInput): NormalizedSched
     at: normalizeOptionalString(options.at) ?? "",
     every: normalizeOptionalString(options.every) ?? "",
     cronExpr: normalizeOptionalString(options.cron) ?? "",
-    onExitCommand: normalizeOptionalString(options.onExit) ?? "",
+    onExitCommand: readNonBlankString(options.onExit) ?? "",
     onExitCwd: normalizeOptionalString(options.onExitCwd),
     streamCommand: parseCronStreamCommandArgv(options.streamCommand),
     streamCwd: normalizeOptionalString(options.streamCwd),
