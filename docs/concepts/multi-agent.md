@@ -306,9 +306,10 @@ DM access control (pairing/allowlist) is global per WhatsApp account, not per ag
 
 ## Routing rules
 
-Bindings are deterministic and most-specific wins. See [Channel routing](/channels/channel-routing#routing-rules-how-an-agent-is-chosen) for the full tier order (exact peer, parent peer, peer wildcard, guild+roles, guild, team, account, channel, default agent). A few rules worth calling out here:
+Bindings are deterministic and most-specific wins. See [Channel routing](/channels/channel-routing#routing-rules-how-an-agent-is-chosen) for the full tier order (exact peer, parent peer, peer wildcard, guild+roles, guild, team, account, channel, fallback owner). A few rules worth calling out here:
 
 - If multiple bindings match within the same tier, the first one in config order wins.
+- With more than one configured agent and no explicit owner, a message that matches no binding is not given to a default or first-listed agent. It is not dispatched, and a channel that keeps inbound messages for retry (Telegram, for example) delivers it once a binding gives that account an owner.
 - If a binding sets multiple match fields (for example `peer` + `guildId`), all specified fields must match (`AND` semantics).
 - A binding that omits `accountId` matches only the default account, not every account. Use `accountId: "*"` for a channel-wide fallback, or `accountId: "<name>"` for one account. Adding the same binding again with an explicit account id upgrades the existing channel-only binding instead of duplicating it.
 
