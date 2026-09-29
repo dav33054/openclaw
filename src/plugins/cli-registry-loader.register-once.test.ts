@@ -2,10 +2,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterAll, afterEach, describe, expect, it, onTestFinished } from "vitest";
+import { CliPluginInvocationResources } from "../cli/plugin-invocation-resources.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import {
   createPluginCliLoadSession,
   loadPluginCliDescriptors,
+  loadPluginCliRegistrationEntriesWithDefaults,
   resolvePluginCliRootOwnerIds,
 } from "./cli-registry-loader.js";
 import { getPluginCliCommandDescriptors } from "./cli-root-descriptors.js";
@@ -16,6 +19,8 @@ import {
   useNoBundledPlugins,
   writePlugin,
 } from "./loader.test-fixtures.js";
+import { createPluginCache, retirePluginCache } from "./plugin-cache.js";
+import { getPluginInstance } from "./plugin-instance-scope.js";
 
 afterEach(() => {
   resetPluginLoaderTestStateForTest();
@@ -64,7 +69,87 @@ module.exports = {
   };
 }
 
-describe("plugin CLI metadata registration count", () => {
+describe("plugin CLI metadata registration", () => {
+  it("joins source metadata disposal through the CLI invocation owner", async () => {
+    useNoBundledPlugins();
+    const pluginDir = makePluginLoaderTempDir();
+    writePlugin({
+      id: "owned-cli-metadata",
+      dir: pluginDir,
+      filename: "index.cjs",
+      body: 'throw new Error("Full runtime must not load for metadata help");',
+    });
+    fs.writeFileSync(
+      path.join(pluginDir, "cli-metadata.cjs"),
+      `module.exports = {
+  id: "owned-cli-metadata",
+  register(api) {
+    api.registerCli(() => {}, {
+      parentPath: ["nodes"],
+      descriptors: [{ name: "owned-metadata", description: "Synthetic metadata", hasSubcommands: false }],
+    });
+  },
+};`,
+    );
+    const cache = createPluginCache();
+    const resources = new CliPluginInvocationResources();
+    const session = createPluginCliLoadSession(cache, { resources });
+    const config: OpenClawConfig = {
+      plugins: { allow: ["owned-cli-metadata"], load: { paths: [pluginDir] } },
+    };
+    const params = { cfg: config, env: process.env, primaryCommand: "nodes", session };
+    const removalStarted = createDeferredCore();
+    const finishRemoval = createDeferredCore();
+    let instance: ReturnType<typeof getPluginInstance> = undefined;
+    let releasing: Promise<void> | undefined;
+    let disposals = 0;
+    try {
+      const entries = await loadPluginCliRegistrationEntriesWithDefaults(params, "metadata");
+      expect(entries.map((entry) => entry.parentPath)).toEqual([["nodes"]]);
+      expect(entries.flatMap((entry) => entry.placeholders.map((item) => item.name))).toEqual([
+        "owned-metadata",
+      ]);
+      const registry = await session.resolve(params).metadataRegistry;
+      const record = registry?.plugins.find((entry) => entry.id === "owned-cli-metadata");
+      if (!record) {
+        throw new Error("Expected the real source metadata registration");
+      }
+      instance = getPluginInstance(record);
+      if (!instance) {
+        throw new Error("Expected the registered metadata instance");
+      }
+      instance.onModuleDispose(async () => {
+        disposals++;
+        removalStarted.resolve();
+        await finishRemoval.promise;
+      });
+      session.close();
+      let released = false;
+      releasing = resources.release().then(() => {
+        released = true;
+      });
+      await Promise.race([
+        removalStarted.promise,
+        releasing.then(() => {
+          throw new Error("CLI invocation released before metadata disposal started");
+        }),
+      ]);
+      expect(released).toBe(false);
+      expect(disposals).toBe(1);
+      finishRemoval.resolve();
+      await releasing;
+      await resources.release();
+      expect(disposals).toBe(1);
+    } finally {
+      finishRemoval.resolve();
+      session.close();
+      await releasing?.catch(() => {});
+      await resources.release();
+      await instance?.dispose();
+      await retirePluginCache(cache);
+    }
+  });
+
   it("runs a legacy external plugin register once across CLI bootstrap stages", async () => {
     const { config, markerPath } = setupCountingCliPlugin();
 
