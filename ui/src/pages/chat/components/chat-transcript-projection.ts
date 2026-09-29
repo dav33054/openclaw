@@ -560,16 +560,28 @@ export function projectChatTranscript(
   // Only ID-bearing voice captions need a history scan. Keep membership local
   // to this projection so history replacement and search cannot stale it.
   let persistedIds: Set<string | null> | undefined;
-  const realtimeConversation = renderRealtimeTalkConversation({
-    ...props,
-    realtimeTalkConversation: props.realtimeTalkConversation?.filter((entry) => {
-      if (!entry.transcriptId) {
-        return true;
-      }
-      persistedIds ??= new Set(props.messages.map(persistedMessageEntryId));
-      return !persistedIds.has(entry.transcriptId);
-    }),
-  });
+  // The live voice-turn block is a chronological outlier: it renders at the tail
+  // while typed messages sort into history above it. History already persists the
+  // finalized voice turns (gateway voice-transcript write), so once the realtime
+  // session goes idle the persisted copies own chronology. Showing the unpinned
+  // live block while idle would render those earlier voice turns BELOW newer
+  // typed messages — out of order. Production always sets realtimeTalkActive
+  // (chat-realtime state, initialized false), so an explicit false means idle:
+  // hide the block and let persisted history own those slots. Callers that leave
+  // the flag unset keep upstream behavior (block renders, filter still applies).
+  const realtimeConversation =
+    props.realtimeTalkActive !== false
+      ? renderRealtimeTalkConversation({
+          ...props,
+          realtimeTalkConversation: props.realtimeTalkConversation?.filter((entry) => {
+            if (!entry.transcriptId) {
+              return true;
+            }
+            persistedIds ??= new Set(props.messages.map(persistedMessageEntryId));
+            return !persistedIds.has(entry.transcriptId);
+          }),
+        })
+      : nothing;
   if (realtimeConversation !== nothing) {
     transcriptRows.push({
       kind: "content",
