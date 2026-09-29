@@ -414,7 +414,8 @@ function withFeishuOutboundSendContext(adapter: ChannelOutboundAdapter): Channel
     ...(sendText
       ? {
           sendText: async (ctx) => {
-            const anchored = await withReplyAnchorMessageId(ctx);
+            const threadId = await resolveReplyAnchorThreadId(ctx);
+            const anchored = threadId === ctx.threadId ? ctx : { ...ctx, threadId };
             return await withFeishuSendContext(anchored, () => sendText(anchored));
           },
         }
@@ -422,7 +423,8 @@ function withFeishuOutboundSendContext(adapter: ChannelOutboundAdapter): Channel
     ...(sendMedia
       ? {
           sendMedia: async (ctx) => {
-            const anchored = await withReplyAnchorMessageId(ctx);
+            const threadId = await resolveReplyAnchorThreadId(ctx);
+            const anchored = threadId === ctx.threadId ? ctx : { ...ctx, threadId };
             return await withFeishuSendContext(anchored, () => sendMedia(anchored));
           },
         }
@@ -430,7 +432,8 @@ function withFeishuOutboundSendContext(adapter: ChannelOutboundAdapter): Channel
     ...(sendPayload
       ? {
           sendPayload: async (ctx) => {
-            const anchored = await withReplyAnchorMessageId(ctx);
+            const threadId = await resolveReplyAnchorThreadId(ctx);
+            const anchored = threadId === ctx.threadId ? ctx : { ...ctx, threadId };
             return await withFeishuSendContext(anchored, () => sendPayload(anchored));
           },
         }
@@ -440,23 +443,20 @@ function withFeishuOutboundSendContext(adapter: ChannelOutboundAdapter): Channel
 
 /**
  * A channel target identifies a conversation by its topic (`omt_…`), but a Feishu reply addresses
- * a message. Resolve the topic's root message once per send so every part — text, media, payload
- * and fanout — replies inside the topic instead of starting a new top-level topic. Targets that
+ * a message. Sends resolve that topic once per target so every part — text, media, payload and
+ * fanout — replies inside the topic instead of starting a new top-level topic. Targets that
  * already name a message pass through without a lookup.
  */
-async function withReplyAnchorMessageId<
-  Ctx extends {
-    cfg: ClawdbotConfig;
-    threadId?: string | number | null;
-    accountId?: string | null;
-  },
->(ctx: Ctx): Promise<Ctx> {
-  const threadId = await resolveFeishuReplyAnchorMessageId({
+async function resolveReplyAnchorThreadId(ctx: {
+  cfg: ClawdbotConfig;
+  threadId?: string | number | null;
+  accountId?: string | null;
+}): Promise<string | null | undefined> {
+  return await resolveFeishuReplyAnchorMessageId({
     cfg: ctx.cfg,
     threadId: typeof ctx.threadId === "number" ? String(ctx.threadId) : ctx.threadId,
     accountId: ctx.accountId ?? undefined,
   });
-  return threadId === ctx.threadId ? ctx : ({ ...ctx, threadId } as Ctx);
 }
 
 export const feishuOutbound: ChannelOutboundAdapter = withFeishuOutboundSendContext({

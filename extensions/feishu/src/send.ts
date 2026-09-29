@@ -449,7 +449,7 @@ const TOPIC_ROOT_MESSAGE_ID_CACHE_LIMIT = 512;
  * need the topic's oldest message to keep one session and one reply anchor per topic.
  * Best-effort: a failed lookup returns undefined so the caller keeps its own fallback.
  */
-export async function resolveFeishuTopicRootMessageId(params: {
+async function resolveFeishuTopicRootMessageId(params: {
   cfg: ClawdbotConfig;
   topicId?: string | null;
   accountId?: string;
@@ -464,18 +464,20 @@ export async function resolveFeishuTopicRootMessageId(params: {
     return cached;
   }
 
+  const listParams = {
+    params: {
+      container_id_type: "thread",
+      container_id: topicId,
+      // Topic order is immutable, so the oldest message is the root and one page suffices.
+      sort_type: "ByCreateTimeAsc",
+      page_size: 1,
+    },
+  } as const;
   let response: { code?: number; msg?: string; data?: { items?: Array<{ message_id?: string }> } };
   try {
     const client = createConfiguredFeishuClient({ cfg: params.cfg, accountId: params.accountId });
-    response = (await client.im.message.list({
-      params: {
-        container_id_type: "thread",
-        container_id: topicId,
-        // Topic order is immutable, so the oldest message is the root and one page suffices.
-        sort_type: "ByCreateTimeAsc",
-        page_size: 1,
-      },
-    })) as typeof response;
+    // SAFETY: this call resolves to the Feishu message-list envelope, and only code/msg/data.items are read.
+    response = (await client.im.message.list(listParams)) as typeof response;
   } catch (err) {
     logVerbose(
       `feishu topic root lookup failed for ${topicId}: ${err instanceof Error ? err.message : String(err)}`,
