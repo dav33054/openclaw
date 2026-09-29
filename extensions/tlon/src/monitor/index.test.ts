@@ -1,8 +1,6 @@
 // Tlon monitor tests cover authentication, inbound context, and shutdown lifecycle.
-import fs from "node:fs/promises";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import os from "node:os";
 import { join } from "node:path";
 import { setImmediate } from "node:timers/promises";
 import {
@@ -33,6 +31,7 @@ const {
 } = useTlonMonitorFixture();
 
 const runningServers: Server[] = [];
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 import { extractMessageText } from "./utils.js";
 
@@ -428,7 +427,6 @@ it("continues startup after an initial group invite write fails", async () => {
 });
 
 describe("monitorTlonProvider reply prefixes", () => {
-  const tempDirs = useAutoCleanupTempDirTracker(afterEach);
   it.for([
     { name: "global fallback", root: undefined, account: undefined, expected: "[global] reply" },
     { name: "channel override", root: "[root]", account: undefined, expected: "[root] reply" },
@@ -522,115 +520,117 @@ describe("monitorTlonProvider reply prefixes", () => {
 
 describe("monitorTlonProvider production-path sender authentication", () => {
   it("proves DM delivery and club rejection through real SSE and durable ingress", async () => {
-    const stateDir = await fs.mkdtemp(join(os.tmpdir(), "openclaw-tlon-production-path-"));
-    const queue = createChannelIngressQueueForTests({
-      channelId: "tlon",
-      accountId: "default",
-      stateDir,
-    });
-    const legacyClubEvent = {
-      whom: "0v3.q4n5m.6r7s8.9t0u1.2v3w4",
-      id: "legacy-club-forged-owner",
-      response: {
-        add: {
-          essay: { author: "~nec", content: [{ inline: ["/whoami"] }], sent: 1 },
+    const stateDir = tempDirs.make("tlon-production-path-");
+    const controller = new AbortController();
+    let monitor: ReturnType<typeof monitorTlonProvider> | undefined;
+    try {
+      const queue = createChannelIngressQueueForTests({
+        channelId: "tlon",
+        accountId: "default",
+        stateDir,
+      });
+      const legacyClubEvent = {
+        whom: "0v3.q4n5m.6r7s8.9t0u1.2v3w4",
+        id: "legacy-club-forged-owner",
+        response: {
+          add: {
+            essay: { author: "~nec", content: [{ inline: ["/whoami"] }], sent: 1 },
+          },
         },
-      },
-    };
-    const legacyPayload = {
-      version: 1 as const,
-      receivedAt: 1,
-      source: "chat" as const,
-      rawEvent: JSON.stringify(legacyClubEvent),
-    };
-    await queue.enqueue("legacy-club-forged-owner", legacyPayload, {
-      receivedAt: 1,
-      laneKey: "direct:~nec",
-    });
-    realIngressFixture.enabled = true;
-    realIngressFixture.queue = queue;
+      };
+      const legacyPayload = {
+        version: 1 as const,
+        receivedAt: 1,
+        source: "chat" as const,
+        rawEvent: JSON.stringify(legacyClubEvent),
+      };
+      await queue.enqueue("legacy-club-forged-owner", legacyPayload, {
+        receivedAt: 1,
+        laneKey: "direct:~nec",
+      });
+      realIngressFixture.enabled = true;
+      realIngressFixture.queue = queue;
 
-    const subscriptions: Array<{ id: number; action: string; app?: string; path?: string }> = [];
-    let stream: ServerResponse | undefined;
-    const server = createServer((req, res) => {
-      const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
-      if (req.method === "POST" && pathname === "/~/login") {
-        res.writeHead(200, {
-          "Content-Type": "text/plain",
-          "Set-Cookie": "urbauth-~sampel-palnet=proof; Path=/",
-        });
-        res.end("ok");
-        return;
-      }
-      if (req.method === "GET" && pathname.startsWith("/~/scry/")) {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end("{}");
-        return;
-      }
-      if (req.method === "PUT" && pathname.startsWith("/~/channel/")) {
-        let body = "";
-        req.setEncoding("utf8");
-        req.on("data", (part: string) => {
-          body += part;
-        });
-        req.on("end", () => {
-          const actions = JSON.parse(body) as Array<{
-            id: number;
-            action: string;
-            app?: string;
-            path?: string;
-          }>;
-          subscriptions.push(...actions.filter((action) => action.action === "subscribe"));
+      const subscriptions: Array<{ id: number; action: string; app?: string; path?: string }> = [];
+      let stream: ServerResponse | undefined;
+      const server = createServer((req, res) => {
+        const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
+        if (req.method === "POST" && pathname === "/~/login") {
+          res.writeHead(200, {
+            "Content-Type": "text/plain",
+            "Set-Cookie": "urbauth-~sampel-palnet=proof; Path=/",
+          });
+          res.end("ok");
+          return;
+        }
+        if (req.method === "GET" && pathname.startsWith("/~/scry/")) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end("{}");
+          return;
+        }
+        if (req.method === "PUT" && pathname.startsWith("/~/channel/")) {
+          let body = "";
+          req.setEncoding("utf8");
+          req.on("data", (part: string) => {
+            body += part;
+          });
+          req.on("end", () => {
+            const actions = JSON.parse(body) as Array<{
+              id: number;
+              action: string;
+              app?: string;
+              path?: string;
+            }>;
+            subscriptions.push(...actions.filter((action) => action.action === "subscribe"));
+            res.writeHead(204);
+            res.end();
+          });
+          return;
+        }
+        if (req.method === "GET" && pathname.startsWith("/~/channel/")) {
+          stream = res;
+          res.writeHead(200, {
+            "Cache-Control": "no-cache",
+            "Content-Type": "text/event-stream",
+          });
+          res.write(": connected\n\n");
+          return;
+        }
+        if (req.method === "DELETE" && pathname.startsWith("/~/channel/")) {
           res.writeHead(204);
           res.end();
-        });
-        return;
-      }
-      if (req.method === "GET" && pathname.startsWith("/~/channel/")) {
-        stream = res;
-        res.writeHead(200, {
-          "Cache-Control": "no-cache",
-          "Content-Type": "text/event-stream",
-        });
-        res.write(": connected\n\n");
-        return;
-      }
-      if (req.method === "DELETE" && pathname.startsWith("/~/channel/")) {
-        res.writeHead(204);
+          return;
+        }
+        res.writeHead(404);
         res.end();
-        return;
-      }
-      res.writeHead(404);
-      res.end();
-    });
-    runningServers.push(server);
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", resolve);
-    });
-    const address = server.address() as AddressInfo;
-    realUrbitFixture.url = `http://127.0.0.1:${address.port}`;
-    realUrbitFixture.enabled = true;
-    realUrbitFixture.config = {
-      session: { store: join(stateDir, "sessions.json") },
-      channels: {
-        tlon: {
-          code: "code",
-          ship: "~sampel-palnet",
-          url: realUrbitFixture.url,
-          network: { dangerouslyAllowPrivateNetwork: true },
-          ownerShip: "~nec",
+      });
+      runningServers.push(server);
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", resolve);
+      });
+      const address = server.address() as AddressInfo;
+      realUrbitFixture.url = `http://127.0.0.1:${address.port}`;
+      realUrbitFixture.enabled = true;
+      realUrbitFixture.config = {
+        session: { store: join(stateDir, "sessions.json") },
+        channels: {
+          tlon: {
+            code: "code",
+            ship: "~sampel-palnet",
+            url: realUrbitFixture.url,
+            network: { dangerouslyAllowPrivateNetwork: true },
+            ownerShip: "~nec",
+          },
         },
-      },
-    };
-    const actualAuth = await vi.importActual<typeof import("../urbit/auth.js")>("../urbit/auth.js");
-    authenticateMock.mockImplementationOnce(actualAuth.authenticate);
+      };
+      const actualAuth =
+        await vi.importActual<typeof import("../urbit/auth.js")>("../urbit/auth.js");
+      authenticateMock.mockImplementationOnce(actualAuth.authenticate);
 
-    const controller = new AbortController();
-    const runtime = { error: vi.fn(), exit: vi.fn(), log: vi.fn() } satisfies RuntimeEnv;
-    const monitor = monitorTlonProvider({ abortSignal: controller.signal, runtime });
-    void monitor.catch(() => {});
-    try {
+      const runtime = { error: vi.fn(), exit: vi.fn(), log: vi.fn() } satisfies RuntimeEnv;
+      monitor = monitorTlonProvider({ abortSignal: controller.signal, runtime });
+      void monitor.catch(() => {});
       await vi.waitFor(async () => {
         expect((await queue.enqueue("legacy-club-forged-owner", legacyPayload)).kind).toBe(
           "failed",
@@ -693,10 +693,11 @@ describe("monitorTlonProvider production-path sender authentication", () => {
       );
     } finally {
       controller.abort();
-      await monitor;
+      if (monitor) {
+        await monitor;
+      }
       realUrbitFixture.client = null;
       closeOpenClawStateDatabaseForTest();
-      await fs.rm(stateDir, { recursive: true, force: true });
     }
   });
 });
