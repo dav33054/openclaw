@@ -14,6 +14,7 @@ import {
   validateProjectsRemoveParams,
   validateProjectsSearchRemoteParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { readCachedNativeGitHubToken } from "../../agents/github-read-identity.js";
 import { listRegistryWorktrees } from "../../agents/worktrees/registry.js";
 import { managedWorktrees, type ManagedWorktreeService } from "../../agents/worktrees/service.js";
 import { loadCombinedSessionStoreForGatewayCoreAsync } from "../../config/sessions/combined-store-gateway.js";
@@ -35,13 +36,18 @@ import {
 import { isTrustedSecretSurfaceUnavailableError } from "../../secrets/runtime-degraded-state.js";
 import { readCurrentUserProfileAliases } from "../../state/user-profile-list.js";
 import { runTasksWithConcurrency } from "../../utils/run-with-concurrency.js";
+import { configuredDefaultRepository } from "../configured-default-repository.js";
 import { readGatewayAccessRevision } from "../gateway-access-revision.js";
 import {
   CONTROL_UI_GITHUB_CREDENTIAL_UNAVAILABLE_MESSAGE,
   gitHubPublicApi,
   githubApiToken,
 } from "../github-public-api.js";
-import { WRITE_SCOPE, authorizeOperatorScopesForRequiredScope } from "../method-scopes.js";
+import {
+  WRITE_SCOPE,
+  authorizeOperatorScopesForMethod,
+  authorizeOperatorScopesForRequiredScope,
+} from "../method-scopes.js";
 import { searchRemoteProjects } from "../project-github-search.js";
 import { getSessionRowProjection } from "../session-row-projection-access.js";
 import { createSessionListEntryFilter } from "../session-sharing.js";
@@ -342,6 +348,7 @@ export function createProjectsHandlers(service: ProjectWorktreeService): Gateway
         return;
       }
       const diagnostics = startProjectsListDiagnostics(context);
+      const defaultRepository = configuredDefaultRepository(context.getRuntimeConfig());
       try {
         const registryProjects = await listProjectRegistry(context.getRuntimeConfig());
         diagnostics?.mark("sessions");
@@ -365,6 +372,11 @@ export function createProjectsHandlers(service: ProjectWorktreeService): Gateway
         const canWrite = () =>
           authorizeOperatorScopesForRequiredScope(
             WRITE_SCOPE,
+            Array.isArray(client?.connect.scopes) ? client.connect.scopes : [],
+          ).allowed;
+        const canCreateSession = () =>
+          authorizeOperatorScopesForMethod(
+            "sessions.create",
             Array.isArray(client?.connect.scopes) ? client.connect.scopes : [],
           ).allowed;
         let store: ReturnType<typeof loadCombinedSessionStoreForGatewayCore>["store"] = {};
@@ -437,6 +449,7 @@ export function createProjectsHandlers(service: ProjectWorktreeService): Gateway
             true,
             {
               projects,
+              ...(defaultRepository ? { defaultRepository } : {}),
               ...(recents ? { recents } : {}),
               ...(observedProjects ? { observedProjects } : {}),
             },
@@ -452,6 +465,7 @@ export function createProjectsHandlers(service: ProjectWorktreeService): Gateway
             projects: projects.map(({ id, displayName, source, agentId }) =>
               agentId ? { id, displayName, source, agentId } : { id, displayName, source },
             ),
+            ...(defaultRepository && canCreateSession() ? { defaultRepository } : {}),
             ...(recents ? { recents: recents.filter((recent) => recent.kind === "project") } : {}),
           },
           undefined,
@@ -492,11 +506,12 @@ export function createProjectsHandlers(service: ProjectWorktreeService): Gateway
         return;
       }
       try {
+        const cfg = context.getRuntimeConfig();
         respond(
           true,
           await materializeProjectClone(
-            { cfg: context.getRuntimeConfig(), gitUrl: params.gitUrl, name: params.name },
-            { signal, token: githubApiToken() },
+            { cfg, gitUrl: params.gitUrl, name: params.name },
+            { signal, token: githubApiToken(process.env, cfg) },
           ),
           undefined,
         );
@@ -536,7 +551,7 @@ export function createProjectsHandlers(service: ProjectWorktreeService): Gateway
         respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, formatErrorMessage(error)));
       }
     },
-    "projects.searchRemote": async ({ params, respond }) => {
+    "projects.searchRemote": async ({ params, respond, context }) => {
       if (
         !assertValidParams(
           params,
@@ -548,7 +563,18 @@ export function createProjectsHandlers(service: ProjectWorktreeService): Gateway
         return;
       }
       try {
-        respond(true, await searchRemoteProjects(params.query), undefined);
+        const nativeToken =
+          context.getRuntimeConfig().gateway?.projects?.nativeGitHubSearch === true
+            ? await readCachedNativeGitHubToken(process.env)
+            : undefined;
+        respond(
+          true,
+          await searchRemoteProjects(
+            params.query,
+            nativeToken === undefined ? undefined : { token: nativeToken },
+          ),
+          undefined,
+        );
       } catch (error) {
         const { message, ...details } =
           error instanceof gitHubPublicApi.ControlUiGitHubError ||
