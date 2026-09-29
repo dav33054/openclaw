@@ -287,6 +287,57 @@ describe("Tlon durable ingress", () => {
     });
   });
 
+  it("serializes new bare-peer DMs behind a pre-upgrade raw-lane backlog", async () => {
+    await withQueue(async (queue) => {
+      const legacy = chatEvent({ id: "legacy-bare-peer", peer: "nec" });
+      await queue.enqueue(
+        "legacy-bare-peer",
+        {
+          version: 1,
+          receivedAt: 1,
+          source: "chat",
+          rawEvent: JSON.stringify(legacy),
+        },
+        { receivedAt: 1, laneKey: "direct:nec" },
+      );
+      const releaseLegacy = deferred();
+      const delivered: string[] = [];
+      const dispatch = vi.fn<TlonIngressDispatch>(async (_source, event, lifecycle) => {
+        const id = (event as { id: string }).id;
+        delivered.push(id);
+        if (id === "legacy-bare-peer") {
+          await releaseLegacy.promise;
+        }
+        await lifecycle.onAdopted();
+      });
+      const monitor = startMonitor(queue, dispatch);
+      try {
+        await vi.waitFor(() => expect(delivered).toEqual(["legacy-bare-peer"]));
+
+        await monitor.receive({
+          source: "chat",
+          event: chatEvent({ id: "new-bare-peer", peer: "nec" }),
+        });
+        await vi.waitFor(async () => {
+          expect(
+            (await queue.listPending({ limit: "all" })).map((record) => [
+              record.id,
+              record.laneKey,
+            ]),
+          ).toContainEqual(["new-bare-peer", "direct:nec"]);
+        });
+        expect(delivered).toEqual(["legacy-bare-peer"]);
+
+        releaseLegacy.resolve();
+        await monitor.waitForIdle();
+        expect(delivered).toEqual(["legacy-bare-peer", "new-bare-peer"]);
+      } finally {
+        releaseLegacy.resolve();
+        await monitor.stop();
+      }
+    });
+  });
+
   it("uses the nested reply id rather than the parent post id", async () => {
     await withQueue(async (queue) => {
       const dispatch = vi.fn(async () => ({ kind: "deferred" }) as const);

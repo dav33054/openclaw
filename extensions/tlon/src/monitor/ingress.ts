@@ -68,7 +68,7 @@ type TlonIngressInspectionContext =
 
 function inspectChatEvent(
   event: unknown,
-  context: TlonIngressInspectionContext,
+  _context: TlonIngressInspectionContext,
 ): { eventId: string; laneKey: string } | null {
   const envelope = isRecord(event) ? event : null;
   const response = isRecord(envelope?.response) ? envelope.response : null;
@@ -86,12 +86,10 @@ function inspectChatEvent(
     return null;
   }
   const legacyLaneKey = rawWhom ? `direct:${rawWhom}` : null;
-  if (context.phase === "claim" && legacyLaneKey && context.claimedLaneKey === legacyLaneKey) {
-    // Before sender hardening, valid bare or mixed-form DM peers were persisted
-    // under their raw whom lane. Preserve only those authenticated legacy lanes.
-    return { eventId, laneKey: legacyLaneKey };
-  }
-  return { eventId, laneKey: `direct:${peer}` };
+  // Keep validated peers on their raw whom lane. Older releases persisted that
+  // form, so normalizing only new admissions could split one conversation
+  // across two concurrent drains during an upgrade.
+  return { eventId, laneKey: legacyLaneKey ?? `direct:${peer}` };
 }
 
 function inspectTlonIngressEvent(
