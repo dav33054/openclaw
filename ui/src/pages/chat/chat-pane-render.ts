@@ -23,7 +23,6 @@ import { hasSessionPresenceViewers } from "../../lib/presence-users.ts";
 import { projectsForGateway } from "../../lib/projects.ts";
 import { GitHubPublicationController } from "../../lib/sessions/github-publication-controller.ts";
 import { resolveUiConfiguredMainKey } from "../../lib/sessions/session-key.ts";
-import { showToast } from "../../lib/toast.ts";
 import { navigateToModelProvider } from "../model-providers/navigation.ts";
 import { chatGoalRecovery, mutateChatGoal, submitChatGoalDraft } from "./chat-goals.ts";
 import { isInitialChatHistoryUnavailable } from "./chat-history-state.ts";
@@ -170,8 +169,8 @@ export class ChatPane extends ChatPaneLayoutRender {
       selectedSession,
       placementStartup !== null,
     );
-    const canDismissProgressCard = state.connected && !sessionParticipationBlocked && hasWriteScope;
-    this.providerReview.sync(canDismissProgressCard && !selectedSessionArchived);
+    const canWriteProgressCard = state.connected && !sessionParticipationBlocked && hasWriteScope;
+    this.providerReview.sync(canWriteProgressCard && !selectedSessionArchived);
     const restartRecoveryTombstoned = selectedSession?.restartRecoveryStatus === "tombstoned";
     const multiIdentity = this.hasMultipleIdentities();
     const suggestionViewer =
@@ -361,7 +360,7 @@ export class ChatPane extends ChatPaneLayoutRender {
         sessionDisabledBanner ?? placementComposer.disabledBanner ?? modelUnavailableBanner,
     };
     const progressCardRefresh =
-      canDismissProgressCard &&
+      canWriteProgressCard &&
       composerAvailability.canSend &&
       !catalogKey &&
       !suggestionViewer &&
@@ -422,12 +421,10 @@ export class ChatPane extends ChatPaneLayoutRender {
         lockChatScroll(state);
         this.transcript.cancelScroll();
       },
-      onDismissProgressCard: canDismissProgressCard
-        ? (card) =>
-            void this.progressCard
-              .dismiss(card)
-              .catch(() => showToast({ message: t("sessionProgressCard.dismissFailed") }))
+      onDismissProgressCard: progressPresentation
+        ? (card) => this.hideProgressCard(card)
         : undefined,
+      onClearSavedProgressCard: canWriteProgressCard ? this.clearSavedProgressCard : undefined,
       gatewayQuestionPrompts,
       asyncQuestionStorage:
         !catalogKey && !suggestionViewer ? this.chatState.composerPersistence.durableScope : null,
