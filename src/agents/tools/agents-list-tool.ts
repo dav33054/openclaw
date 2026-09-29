@@ -86,6 +86,7 @@ export function createAgentsListTool(opts?: {
 
       const configuredAgents = listAgentEntries(cfg);
       const configuredIds = listAgentIds(cfg);
+      const configuredIdSet = new Set(configuredIds);
       const configuredNameMap = new Map<string, string>();
       for (const entry of configuredAgents) {
         const name = entry?.name?.trim() ?? "";
@@ -119,7 +120,7 @@ export function createAgentsListTool(opts?: {
         return {
           id,
           name: configuredNameMap.get(id),
-          configured: configuredIds.includes(id),
+          configured: configuredIdSet.has(id),
           model,
           agentRuntime,
         };
