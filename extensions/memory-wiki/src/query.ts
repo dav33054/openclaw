@@ -800,7 +800,7 @@ function isBridgeCompiledPage(page: QueryableWikiPage): boolean {
   );
 }
 
-function createWikiPageVisibilityFilter(params: {
+export function createWikiPageVisibilityFilter(params: {
   appConfig?: OpenClawConfig;
   agentId?: string;
   agentSessionKey?: string;
