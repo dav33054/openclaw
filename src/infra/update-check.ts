@@ -163,7 +163,9 @@ export async function resolveExtendedStablePackage(params: {
   timeoutMs?: number;
   packageName?: string;
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
 }): Promise<ExtendedStableResolutionResult> {
+  params.signal?.throwIfAborted();
   if (params.installKind === "git") {
     return { status: "failed", reason: "unsupported_git_channel" };
   }
@@ -173,8 +175,10 @@ export async function resolveExtendedStablePackage(params: {
   const selector = await fetchNpmPackageTargetStatus({
     target: "extended-stable",
     timeoutMs,
+    signal: params.signal,
     ...registryTarget,
   });
+  params.signal?.throwIfAborted();
   if (!selector.version) {
     return {
       status: "failed",
@@ -185,8 +189,10 @@ export async function resolveExtendedStablePackage(params: {
   const exact = await fetchNpmPackageTargetStatus({
     target: selector.version,
     timeoutMs,
+    signal: params.signal,
     ...registryTarget,
   });
+  params.signal?.throwIfAborted();
   if (exact.version !== selector.version) {
     return { status: "failed", reason: "exact_package_mismatch" };
   }
@@ -558,6 +564,7 @@ export async function resolveNpmChannelTag(params: {
     const resolved = await resolveExtendedStablePackage({
       installKind: "package",
       timeoutMs: params.timeoutMs,
+      signal: params.signal,
     });
     return resolved.status === "resolved"
       ? { tag: resolved.selector, version: resolved.version }
@@ -608,7 +615,11 @@ export async function checkUpdateStatus(params: {
   const resolveRegistryChannel = (status: UpdateInstallIdentity) =>
     params.registryChannel ?? params.resolveRegistryChannel?.(status);
   const fetchRegistry = async (channel: UpdateChannel | undefined): Promise<RegistryStatus> => {
-    const result = await resolveNpmChannelTag({ channel: channel ?? "stable", timeoutMs });
+    const result = await resolveNpmChannelTag({
+      channel: channel ?? "stable",
+      timeoutMs,
+      signal: params.signal,
+    });
     return {
       latestVersion: result.version,
       ...(channel ? { tag: result.tag } : {}),
