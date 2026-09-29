@@ -3793,7 +3793,6 @@ describe("doctor health contributions", () => {
   it("keeps core-kind repairs out of the extension repair pass", async () => {
     const contribution = requireDoctorContribution("doctor:structured-health-repairs");
     const ctx = createDoctorContext({
-      cfg: {},
       configResult: { cfg: {} },
       cfgForPersistence: {},
       shouldRepair: true,
@@ -3804,6 +3803,7 @@ describe("doctor health contributions", () => {
 
     expect(mocks.runDoctorHealthRepairs).toHaveBeenCalledWith(expect.any(Object), {
       checks: [getHealthCheck("plugin/example/unrelated")],
+      progress: true,
     });
   });
 
@@ -3825,7 +3825,7 @@ describe("doctor health contributions", () => {
 
     expect(mocks.runDoctorHealthRepairs).toHaveBeenCalledWith(
       expect.objectContaining({ env: { OPENCLAW_UPDATE_POST_CORE: "1" } }),
-      { checks: [getHealthCheck("plugin/example/regular")] },
+      { checks: [getHealthCheck("plugin/example/regular")], progress: true },
     );
   });
 

@@ -17,6 +17,8 @@ interface DoctorRepairRunOptions {
   readonly checks?: readonly DoctorHealthCheck[];
   readonly dryRun?: boolean;
   readonly diff?: boolean;
+  /** Emit human-readable per-check lifecycle lines for the Doctor CLI. */
+  readonly progress?: boolean;
 }
 
 interface DoctorRepairRunResult {
@@ -42,20 +44,33 @@ export async function runDoctorHealthRepairs(
   const result = createRepairRunResult(ctx.cfg, checks.length);
 
   for (const check of checks) {
-    const runResult = await runHealthCheck(check, { ...ctx, cfg: result.config }, opts);
-    result.config = runResult.config;
-    result.findings.push(...runResult.findings);
-    // Only a completed validation can replace this check's original findings;
-    // skipped, failed, and unvalidated siblings must remain visible in mixed batches.
-    result.remainingFindings.push(
-      ...(runResult.checksValidated > 0 ? runResult.remainingFindings : runResult.findings),
-    );
-    result.changes.push(...runResult.changes);
-    result.warnings.push(...runResult.warnings);
-    result.diffs.push(...runResult.diffs);
-    result.effects.push(...runResult.effects);
-    result.checksRepaired += runResult.checksRepaired;
-    result.checksValidated += runResult.checksValidated;
+    const startedAt = performance.now();
+    let outcome: "completed" | "warning" = "completed";
+    if (opts.progress === true) {
+      ctx.runtime.log(`Doctor: ${check.id} started`);
+    }
+    try {
+      const runResult = await runHealthCheck(check, { ...ctx, cfg: result.config }, opts);
+      outcome = runResult.warnings.length > 0 ? "warning" : "completed";
+      result.config = runResult.config;
+      result.findings.push(...runResult.findings);
+      // Only a completed validation can replace this check's original findings;
+      // skipped, failed, and unvalidated siblings must remain visible in mixed batches.
+      result.remainingFindings.push(
+        ...(runResult.checksValidated > 0 ? runResult.remainingFindings : runResult.findings),
+      );
+      result.changes.push(...runResult.changes);
+      result.warnings.push(...runResult.warnings);
+      result.diffs.push(...runResult.diffs);
+      result.effects.push(...runResult.effects);
+      result.checksRepaired += runResult.checksRepaired;
+      result.checksValidated += runResult.checksValidated;
+    } finally {
+      if (opts.progress === true) {
+        const durationMs = Math.max(0, Math.round(performance.now() - startedAt));
+        ctx.runtime.log(`Doctor: ${check.id} ${outcome} (${durationMs}ms)`);
+      }
+    }
   }
 
   return result;
