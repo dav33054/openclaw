@@ -7,7 +7,15 @@ import type {
   TranscriptArchivePublishPlan,
   TranscriptArchivePublishResult,
 } from "../config/sessions/session-accessor.sqlite-archive-types.js";
-import type { SessionTranscriptInitializationPublication } from "../config/sessions/session-accessor.sqlite-entry-cache.types.js";
+import type {
+  SessionEntryReplacementPublication,
+  SessionTranscriptInitializationPublication,
+} from "../config/sessions/session-accessor.sqlite-entry-cache.types.js";
+import type {
+  SessionEntryMaintenanceInput,
+  SessionMaintenanceLiveProtection,
+  SessionMaintenanceMetadataResult,
+} from "../config/sessions/session-accessor.sqlite-lifecycle-types.js";
 import type {
   SessionEntryReplacementCommit,
   SessionEntryReplacementCommitted,
@@ -94,6 +102,38 @@ export type AgentDatabaseOperations = AgentDatabaseDomainOperations & {
       initializeTranscript?: { sessionKey: string; sessionId: string; cwd?: string };
     };
     output: SessionEntryReplacementCommitted;
+  };
+  "session.maintenance.prepare": {
+    input: { id: string; input: SessionEntryMaintenanceInput };
+    output: void;
+  };
+  "session.maintenance.release": { input: { id: string }; output: void };
+  "session.maintenance.metadata": {
+    input:
+      | { kind: "maintenance-statistics" }
+      | {
+          kind: "maintenance-plan";
+          preparationId: string;
+          protection: SessionMaintenanceLiveProtection;
+        };
+    output:
+      | {
+          kind: "committed";
+          workerThreadId: number;
+          value: Exclude<
+            SessionMaintenanceMetadataResult,
+            { kind: "maintenance-preservation-required" | "maintenance-plan-stale" }
+          >;
+          publication: SessionEntryReplacementPublication;
+        }
+      | {
+          kind: "not-committed";
+          workerThreadId: number;
+          value: Extract<
+            SessionMaintenanceMetadataResult,
+            { kind: "maintenance-preservation-required" | "maintenance-plan-stale" }
+          >;
+        };
   };
   "session.providerReview.compare": {
     input: SessionProviderReviewComparison;

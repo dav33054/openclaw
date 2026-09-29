@@ -142,7 +142,10 @@ export type SubagentManagerOptions = {
   persistOrThrow(...runIds: string[]): void;
   persistAsyncOrThrow: (
     context: OpenClawStateWorkerContext,
-    callbacks: Omit<SubagentRegistryWriteOptions, "context"> & { assertCurrent: () => void },
+    callbacks: Omit<SubagentRegistryWriteOptions, "context"> & {
+      assertCurrent: () => void;
+      snapshot?: Map<string, SubagentRunRecord>;
+    },
     ...runIds: string[]
   ) => Promise<void>;
   acquireTerminalCompletionLock: (runId: string) => Promise<() => void>;

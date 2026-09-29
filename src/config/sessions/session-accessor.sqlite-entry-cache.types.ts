@@ -38,6 +38,15 @@ export type SessionSharingEntry = Pick<
   | "sessionStartedAt"
 >;
 
+export type SessionEntryReplacementPublication = {
+  kind: "session-entry-replacements";
+  pendingArchiveRecovery: boolean;
+  previous: Map<string, Pick<SessionEntry, "sessionId" | "lifecycleRevision">>;
+  current: Map<string, SessionSharingEntry>;
+  changedKeys: string[];
+  membershipInvalidatedKeys: string[];
+};
+
 export function projectSessionSharingEntry(entry: InternalSessionEntry): SessionSharingEntry {
   return {
     sessionId: entry.sessionId,

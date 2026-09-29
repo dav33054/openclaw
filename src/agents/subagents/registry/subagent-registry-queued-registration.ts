@@ -191,6 +191,8 @@ export function registerRequiredQueuedSubagent(params: {
         ownsSession(),
       canAcceptLaunch: () =>
         registrationAcknowledged && registryCurrent() && exactEntry() && ownsSession(),
+      canAbortAcceptedRun: () =>
+        registrationAcknowledged && registryCurrent() && exactEntry() && ownsSession(),
       canRetireReservation: () => ownsSwarmRunReservation(runId, entry),
       settleFailedLaunch: async (error: string) => {
         for (;;) {

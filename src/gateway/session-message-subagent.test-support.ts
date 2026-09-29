@@ -51,10 +51,10 @@ export function registerRecoveredSubagentSessionEventTest({
       getRuntimeConfig: () => ({}),
       persist: vi.fn(),
       persistOrThrow: vi.fn(),
-      persistAsyncOrThrow: async (_context, publication) => {
+      persistAsyncOrThrow: async (_context, publication, ...runIds) => {
         await Promise.resolve();
         publication.assertCurrent();
-        publication.onCommitted?.();
+        publication.onCommitted?.(runIds);
       },
       clearPendingLifecycleError: vi.fn(),
       countPendingDescendantRuns: async () => 0,

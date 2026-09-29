@@ -7,11 +7,13 @@ import { createSubagentRunManager } from "./subagent-registry-run-manager.js";
 import type { SubagentManagerOptions } from "./subagent-registry-run-wait.js";
 import type { SubagentRegistrationScope, SubagentRunRecord } from "./subagent-registry.types.js";
 
-export function createQueuedRegistrationFixture(mocks: {
-  register: Mock<SubagentLaunchManager["registerSubagentRun"]>;
-  persisted: Set<() => void>;
-}) {
-  const runs = new Map<string, SubagentRunRecord>();
+export function createQueuedRegistrationFixture(
+  mocks: {
+    register: Mock<SubagentLaunchManager["registerSubagentRun"]>;
+    persisted: Set<() => void>;
+  },
+  runs = new Map<string, SubagentRunRecord>(),
+) {
   let syncRevision = 0;
   let acknowledgeAll = false;
   let acknowledgeControlWrite = false;
@@ -33,7 +35,7 @@ export function createQueuedRegistrationFixture(mocks: {
             await Promise.resolve();
             authority.assertCurrent();
             syncRevision += 1;
-            callbacks.onCommitted?.();
+            callbacks.onCommitted?.(authority.currentRunIds());
             for (const listener of mocks.persisted) {
               listener();
             }
@@ -44,7 +46,7 @@ export function createQueuedRegistrationFixture(mocks: {
       const admittedRevision = syncRevision;
       const write: (typeof writes)[number] = {
         gate,
-        snapshot: structuredClone(runs),
+        snapshot: structuredClone(callbacks.snapshot ?? runs),
         assertCurrent: callbacks.assertCurrent,
       };
       writes.push(write);
@@ -55,7 +57,7 @@ export function createQueuedRegistrationFixture(mocks: {
       }
       return gate.promise.then(() => {
         if (syncRevision === admittedRevision) {
-          callbacks.onCommitted?.();
+          callbacks.onCommitted?.(runIds);
         }
         for (const listener of mocks.persisted) {
           listener();

@@ -102,9 +102,9 @@ function createRequesterSettleWakeMutationFixture(
           context,
           {
             ...callbacks,
-            onCommitted() {
+            onCommitted(runIds) {
               params.onCommitted({ entries: original, result });
-              callbacks.onCommitted?.();
+              callbacks.onCommitted?.(runIds);
             },
           },
           ...ids,
@@ -555,7 +555,7 @@ export function registerRequesterSettleRetirementTests({
         getLatestRunForChildSession: getLatestLiveSubagentRunByChildSessionKey,
         countPendingDescendantRuns,
         maybeWakeRequesterAfterAllChildrenSettled: runRequesterSettleWake,
-        persistAsyncOrThrow: async (_context, publication) => {
+        persistAsyncOrThrow: async (_context, publication, ...runIds) => {
           publication.assertCurrent();
           if (failRetirement && publication.retireRunIds?.includes(intermediate.runId)) {
             throw new SubagentRegistryWriteError(
@@ -564,7 +564,7 @@ export function registerRequesterSettleRetirementTests({
             );
           }
           await Promise.resolve();
-          publication.onCommitted?.();
+          publication.onCommitted?.(runIds);
         },
         resumeSubagentRun: (runId) => {
           const current = subagentRuns.get(runId);

@@ -54,6 +54,7 @@ import {
   requestRestrictedAgentDatabaseAdmission,
   type AgentDatabaseAdmissionRestriction,
 } from "./openclaw-agent-execution-domain.js";
+import { createAgentDatabaseMaintenanceOwner } from "./openclaw-agent-execution-maintenance.js";
 import {
   requireOpenClawStateDatabaseIdentity,
   retainOpenClawStateDatabase,
@@ -170,7 +171,6 @@ function openAgentDatabaseBackend(
     }
     return attachment.startupJournal;
   };
-  // This request-local flag is installed only for the synchronous native command below.
   const readDeletionJournal = () =>
     readAgentDeletionJournalStatusInDatabase(
       expectDefined(shared, "Agent execution shared-state owner").db,
@@ -365,6 +365,12 @@ function openAgentDatabaseBackend(
   let pendingInputWithdrawal:
     | typeof import("../config/sessions/session-pending-input-withdrawal.worker.js")
     | undefined;
+  const maintenance = createAgentDatabaseMaintenanceOwner({
+    databaseOptions: options,
+    assertFileIdentity,
+    openWriter,
+    admit,
+  });
   const domain = createAgentDatabaseDomainOwner({
     databasePath: input.databasePath,
     assertCurrent() {
@@ -513,6 +519,13 @@ function openAgentDatabaseBackend(
         return result;
       });
     }
+    if (
+      command.type === "session.maintenance.release" ||
+      command.type === "session.maintenance.prepare" ||
+      command.type === "session.maintenance.metadata"
+    ) {
+      return maintenance.execute(command);
+    }
     if (command.type === "session.providerReview.compare" && providerReview) {
       return providerReview.compareSessionProviderReviewInWorker(
         openWriter(),
@@ -529,28 +542,13 @@ function openAgentDatabaseBackend(
         admit,
       );
     }
-    if (command.type === "session.archivePruning.deletePublished" && archivePruning) {
-      return archivePruning.deletePublishedSessionArchiveInDatabase(
-        openWriter(),
-        options,
-        command.input,
-        admit,
-      );
-    }
-    if (command.type === "session.archivePruning.removeLegacy" && archivePruning) {
-      return archivePruning.removeLegacySessionArchiveInDatabase(
-        openWriter(),
-        options,
-        command.input.filePath,
-        admit,
-      );
-    }
-    if (command.type === "session.archivePruning.reclaimPages" && archivePruning) {
-      return archivePruning.reclaimSessionArchivePagesInWorker(
-        openWriter(),
-        command.input.maxPages,
-        admit,
-      );
+    if (
+      archivePruning &&
+      (command.type === "session.archivePruning.deletePublished" ||
+        command.type === "session.archivePruning.removeLegacy" ||
+        command.type === "session.archivePruning.reclaimPages")
+    ) {
+      return archivePruning.executeSessionArchivePruning(openWriter(), options, command, admit);
     }
     throw new Error("Unknown agent database operation");
   };
@@ -617,6 +615,12 @@ function openAgentDatabaseBackend(
           },
         );
       }
+      if (
+        command.type === "session.maintenance.metadata" ||
+        command.type === "session.maintenance.prepare"
+      ) {
+        return maintenance.prepare();
+      }
       if (command.type === "session.providerReview.compare") {
         return import("../config/sessions/provider-review-store.worker.js").then((module) => {
           providerReview = module;
@@ -652,6 +656,7 @@ function openAgentDatabaseBackend(
       }
     },
     [SQLITE_WORKER_OPERATION_CLEANUP](command) {
+      maintenance.cleanup(command);
       if (command.type === "database.domain.publish") {
         startupJournalRequested = publicationStartupJournal ?? false;
         try {
@@ -700,6 +705,7 @@ function openAgentDatabaseBackend(
       closeReceipt = closeAgentDatabaseExecution({
         database,
         identity,
+        releasePreparations: maintenance.getPreparationReleases(),
         closeDomain: () => domain.close(),
         releaseBorrow,
         releaseSharedBorrow: () => sharedBorrow?.release(),

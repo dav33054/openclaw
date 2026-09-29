@@ -250,6 +250,16 @@ describe("queued registry worker publication", () => {
 
   it("keeps a publication failure after acknowledgement known committed without undo or replay", async () => {
     const entry = run();
+    persistSubagentRunsToDiskOrThrow(new Map([[entry.runId, entry]]));
+    mocks.save.mockClear();
+    const readStates = () =>
+      [
+        getSubagentRunsSnapshotForRead,
+        getSubagentSessionListRunsSnapshotForRead,
+        getSubagentMaintenanceRunsSnapshotForRead,
+      ].map((read) => read(new Map()).get(entry.runId)?.execution.status);
+    expect(readStates()).toEqual(["queued", "queued", "queued"]);
+    entry.execution = { status: "running" };
     const failure = new Error("Synthetic publication failure");
     const successor: SubagentRunRecord = {
       ...entry,
@@ -260,21 +270,35 @@ describe("queued registry worker publication", () => {
       entries.set(entry.runId, successor);
       throw failure;
     });
-    const pending = persistSubagentRunsToDiskAsyncOrThrow(entries, [entry.runId], {
-      context: original,
-      onCommitted: publish,
-    });
-    const rejected = expect(pending).rejects.toMatchObject({
-      outcome: "committed",
-      cause: failure,
-    });
-    expect(await request("transaction")).toBe(true);
-    expect(await request("commit")).toBe(true);
-    reply.resolve({ writeId: command.writeId });
-    await rejected;
-    expect(entries.get(entry.runId)).toBe(successor);
-    expect(publish).toHaveBeenCalledOnce();
-    expect(mocks.save).not.toHaveBeenCalled();
+    const revision = getSubagentRegistryPublicationRevision();
+    const wake = vi.fn(readStates);
+    const stop = onSubagentRegistryPersisted(wake);
+    try {
+      const pending = persistSubagentRunsToDiskAsyncOrThrow(entries, [entry.runId], {
+        context: original,
+        onCommitted: publish,
+      });
+      const rejected = expect(pending).rejects.toMatchObject({
+        outcome: "committed",
+        cause: failure,
+      });
+      expect(await request("transaction")).toBe(true);
+      expect(await request("commit")).toBe(true);
+      reply.resolve({ writeId: command.writeId });
+      await rejected;
+      expect(entries.get(entry.runId)).toBe(successor);
+      expect(publish).toHaveBeenCalledOnce();
+      expect(mocks.save).not.toHaveBeenCalled();
+      expect(
+        readStates(),
+        "acknowledged registry changes must publish after a callback failure",
+      ).toEqual(["running", "running", "running"]);
+      expect(getSubagentRegistryPublicationRevision()).toBe(revision + 1);
+      expect(wake).toHaveBeenCalledOnce();
+      expect(wake).toHaveReturnedWith(["running", "running", "running"]);
+    } finally {
+      stop();
+    }
   });
 
   it.each(["before transaction", "before commit"])(
@@ -301,42 +325,77 @@ describe("queued registry worker publication", () => {
     },
   );
 
-  it.each(["synchronous", "atomic"])(
-    "keeps a newer %s publication after an older committed acknowledgement",
-    async (writer) => {
+  it.each([
+    ["synchronous", "before acknowledgement"],
+    ["atomic", "before acknowledgement"],
+    ["synchronous", "inside callback"],
+    ["atomic", "inside callback"],
+  ] as const)(
+    "keeps a newer %s publication from %s after an older committed acknowledgement",
+    async (writer, timing) => {
       const entry = run();
       const entries = new Map([[entry.runId, entry]]);
-      const publish = vi.fn();
+      const publishSuccessor = () => {
+        entry.execution = { status: "terminal", endedAt: 2 };
+        if (writer === "atomic") {
+          const deferred: Array<() => void> = [];
+          publishSubagentRunsAfterAtomicStore(entries, [entry.runId], deferred);
+          deferred.forEach((emit) => emit());
+        } else {
+          persistSubagentRunsToDiskOrThrow(entries, [entry.runId]);
+        }
+      };
+      const publish = vi.fn(() => {
+        if (timing === "inside callback") {
+          publishSuccessor();
+        }
+      });
       const pending = persistSubagentRunsToDiskAsyncOrThrow(entries, [entry.runId], {
         context: original,
         onCommitted: publish,
       });
       expect(await request("transaction")).toBe(true);
       expect(await request("commit")).toBe(true);
-      entry.execution = { status: "terminal", endedAt: 2 };
-      if (writer === "atomic") {
-        const deferred: Array<() => void> = [];
-        publishSubagentRunsAfterAtomicStore(entries, [entry.runId], deferred);
-        deferred.forEach((emit) => emit());
-      } else {
-        persistSubagentRunsToDiskOrThrow(entries, [entry.runId]);
+      if (timing === "before acknowledgement") {
+        publishSuccessor();
       }
       const event = vi.fn();
       const stop = onSessionLifecycleEvent(event);
       try {
         reply.resolve({ writeId: command.writeId });
         await pending;
-        expect(publish).not.toHaveBeenCalled();
+        expect(publish).toHaveBeenCalledTimes(timing === "inside callback" ? 1 : 0);
         expect(getSubagentRunsSnapshotForRead(new Map()).get(entry.runId)?.execution.status).toBe(
           "terminal",
         );
         persistSubagentRunsToDiskOrThrow(entries, [entry.runId]);
-        expect(event).not.toHaveBeenCalled();
+        expect(event).toHaveBeenCalledTimes(timing === "inside callback" ? 1 : 0);
       } finally {
         stop();
       }
     },
   );
+
+  it("acknowledges only the rows that survived a newer publication", async () => {
+    const entry = run();
+    const sibling = { ...run(), runId: "sibling" };
+    const entries = new Map([entry, sibling].map((record) => [record.runId, record]));
+    const publish = vi.fn();
+    const pending = persistSubagentRunsToDiskAsyncOrThrow(entries, [entry.runId, sibling.runId], {
+      context: original,
+      onCommitted: publish,
+    });
+    expect(await request("transaction")).toBe(true);
+    expect(await request("commit")).toBe(true);
+    sibling.execution = { status: "terminal", endedAt: 2 };
+    persistSubagentRunsToDiskOrThrow(entries, [sibling.runId]);
+    reply.resolve({ writeId: command.writeId });
+    await pending;
+    expect(publish).toHaveBeenCalledExactlyOnceWith([entry.runId]);
+    expect(getSubagentRunsSnapshotForRead(new Map()).get(sibling.runId)?.execution.status).toBe(
+      "terminal",
+    );
+  });
 
   it.each([false, true])(
     "publishes nothing on missing acknowledgement (commit granted=%s)",
@@ -478,11 +537,17 @@ describe("queued registry worker publication", () => {
             error: { outcome: "committed", publication: "published" },
           });
           expect(entry.execution.status).toBe("terminal");
-          expect(events).toEqual(["handoff"]);
+          expect(events).toEqual(["handoff", "observer"]);
+          expect(getSubagentRunsSnapshotForRead(new Map()).get(entry.runId)?.execution.status).toBe(
+            "terminal",
+          );
         } else if (mode === "caller superseded") {
           expect(result).toEqual({ result: { outcome: "committed", publication: "superseded" } });
           expect(entry.execution).toBe(execution);
-          expect(events).toEqual([]);
+          expect(events).toEqual(["observer"]);
+          expect(getSubagentRunsSnapshotForRead(new Map()).get(entry.runId)?.execution.status).toBe(
+            "terminal",
+          );
         } else {
           expect(result).toEqual({ result: { outcome: "committed", publication: "published" } });
           expect(events).toEqual(["handoff", "observer"]);
@@ -569,24 +634,44 @@ describe("queued registry worker publication", () => {
     },
   );
 
-  it("does not publish a known commit into a successor database", async () => {
-    const entry = run();
-    const pending = persistSubagentRunsToDiskAsyncOrThrow(
-      new Map([[entry.runId, entry]]),
-      [entry.runId],
-      { context: original },
-    );
-    const rejected = expect(pending).rejects.toMatchObject({ outcome: "committed" });
-    expect(await request("transaction")).toBe(true);
-    expect(await request("commit")).toBe(true);
-    const successor = context();
-    successor.admission = {
-      ...successor.admission,
-      identity: { ...successor.admission.identity, key: "successor" },
-    };
-    mocks.context.mockReturnValue(successor);
-    reply.resolve({ writeId: command.writeId });
-    await rejected;
-    expect(getSubagentRunsSnapshotForRead(new Map()).size).toBe(0);
-  });
+  it.each(["before acknowledgement", "inside callback", "failing callback"] as const)(
+    "does not publish a known commit into a successor database (%s)",
+    async (timing) => {
+      const entry = run();
+      const successor = context();
+      successor.admission = {
+        ...successor.admission,
+        identity: { ...successor.admission.identity, key: "successor" },
+      };
+      const failure = new Error("Callback failed after replacing the database");
+      const publish = vi.fn(() => {
+        if (timing !== "before acknowledgement") {
+          mocks.context.mockReturnValue(successor);
+        }
+        if (timing === "failing callback") {
+          throw failure;
+        }
+      });
+      const pending = persistSubagentRunsToDiskAsyncOrThrow(
+        new Map([[entry.runId, entry]]),
+        [entry.runId],
+        { context: original, onCommitted: publish },
+      );
+      const rejected = expect(pending).rejects.toMatchObject({
+        outcome: "committed",
+        ...(timing === "failing callback"
+          ? { cause: { cause: failure, errors: [failure, expect.any(Error)] } }
+          : {}),
+      });
+      expect(await request("transaction")).toBe(true);
+      expect(await request("commit")).toBe(true);
+      if (timing === "before acknowledgement") {
+        mocks.context.mockReturnValue(successor);
+      }
+      reply.resolve({ writeId: command.writeId });
+      await rejected;
+      expect(getSubagentRunsSnapshotForRead(new Map()).size).toBe(0);
+      expect(publish).toHaveBeenCalledTimes(timing === "before acknowledgement" ? 0 : 1);
+    },
+  );
 });

@@ -47,7 +47,7 @@ export function createRequesterInitialTransferFixture(
                 throw new SubagentRegistryWriteError("not-committed", error);
               }
               await Promise.resolve();
-              publication.onCommitted?.();
+              publication.onCommitted?.(runIds);
             }
           : (writeContext, callbacks, ...runIds) =>
               persistSubagentRunsToDiskAsyncOrThrow(runs, runIds, {

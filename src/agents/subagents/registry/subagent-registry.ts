@@ -86,12 +86,16 @@ function persistSubagentRuns(...runIds: string[]) {
 
 function persistSubagentRunsAsyncOrThrow(
   context: OpenClawStateWorkerContext,
-  callbacks: Omit<SubagentRegistryWriteOptions, "context"> & { assertCurrent: () => void },
+  callbacks: Omit<SubagentRegistryWriteOptions, "context"> & {
+    assertCurrent: () => void;
+    snapshot?: Map<string, SubagentRunRecord>;
+  },
   ...runIds: string[]
 ): Promise<void> {
-  return persistSubagentRunsToDiskAsyncOrThrow(subagentRuns, runIds, {
+  const { snapshot, ...publication } = callbacks;
+  return persistSubagentRunsToDiskAsyncOrThrow(snapshot ?? subagentRuns, runIds, {
     context,
-    ...callbacks,
+    ...publication,
   });
 }
 

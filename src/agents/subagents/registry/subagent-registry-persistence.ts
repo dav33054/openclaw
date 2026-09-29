@@ -183,7 +183,7 @@ export class SubagentRegistryCommitReceiptError extends SubagentRegistryWriteErr
 export type SubagentRegistryWriteOptions = {
   context: OpenClawStateWorkerContext;
   assertCurrent?: () => void;
-  onCommitted?: () => void;
+  onCommitted?: (runIds: readonly string[]) => void;
   retireRunIds?: readonly string[];
   pendingKillClaim?: SubagentRunRecord;
 };
@@ -301,7 +301,42 @@ export async function persistSubagentRegistryChangesAsync(
           }
           const currentIds = authority.currentRunIds();
           if (currentIds.length > 0) {
-            publish(snapshot, currentIds);
+            const failures: unknown[] = [];
+            try {
+              options.onCommitted?.(currentIds);
+            } catch (error) {
+              failures.push(error);
+            }
+            try {
+              // A callback failure cannot suppress committed facts or override its successor.
+              authority.assertDatabase();
+              const publishedIds = authority.currentRunIds();
+              if (publishedIds.length > 0) {
+                publish(snapshot, publishedIds);
+              }
+            } catch (error) {
+              failures.push(error);
+            }
+            if (failures.length === 1) {
+              throw failures[0];
+            }
+            if (failures.length > 1) {
+              throw new SubagentRegistryWriteError(
+                "committed",
+                new AggregateError(
+                  failures,
+                  "Subagent registry acknowledgement settlement failed",
+                  { cause: failures[0] },
+                ),
+                failures.some(
+                  (error) =>
+                    error instanceof SubagentRegistryWriteError &&
+                    error.publication === "superseded",
+                )
+                  ? "superseded"
+                  : undefined,
+              );
+            }
           }
         },
         {

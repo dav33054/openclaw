@@ -309,7 +309,11 @@ export function createSubagentsTool(opts: SubagentsToolOptions = {}): AnyAgentTo
             entry,
             generation: entry.generation,
             createdAt: entry.createdAt,
-            ownership: subagentRuns.captureRegistrationOwnership(entry.childSessionKey, entry),
+            ownership: subagentRuns.captureRegistrationOwnership(
+              entry.childSessionKey,
+              entry.runId,
+              entry,
+            ),
           };
         }
         if (selection) {

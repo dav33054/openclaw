@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
-import type { SqliteWalReclamationResult } from "../../infra/sqlite-wal-reclamation.js";
+import type { SqliteWorkerCommand } from "../../infra/sqlite-worker-contract.js";
 import { assertExistingDatabaseIdentity } from "../../infra/sqlite-worker-identity.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import {
@@ -13,6 +13,7 @@ import {
   type OpenClawAgentDatabase,
   type OpenClawAgentDatabaseOptions,
 } from "../../state/openclaw-agent-db.js";
+import type { AgentDatabaseOperations } from "../../state/openclaw-agent-execution-contract.js";
 import { tableExists } from "../../state/openclaw-state-db-schema-helpers.js";
 import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
 import type {
@@ -175,14 +176,31 @@ export function deletePublishedSessionArchiveInDatabase(
   );
 }
 
-export function reclaimSessionArchivePagesInWorker(
+type ArchivePruningCommand = SqliteWorkerCommand<
+  Pick<
+    AgentDatabaseOperations,
+    | "session.archivePruning.deletePublished"
+    | "session.archivePruning.removeLegacy"
+    | "session.archivePruning.reclaimPages"
+  >
+>;
+
+export function executeSessionArchivePruning(
   database: OpenClawAgentDatabase,
-  maxPages: number | undefined,
+  options: OpenClawAgentDatabaseOptions,
+  command: ArchivePruningCommand,
   admit: (stage: "transaction" | "commit") => void,
-): SqliteWalReclamationResult {
-  return database.walMaintenance.reclaimFreePages({
-    maxPages,
-    beforeMutation: () => admit("transaction"),
-    onCommit: () => admit("commit"),
-  });
+) {
+  switch (command.type) {
+    case "session.archivePruning.deletePublished":
+      return deletePublishedSessionArchiveInDatabase(database, options, command.input, admit);
+    case "session.archivePruning.removeLegacy":
+      return removeLegacySessionArchiveInDatabase(database, options, command.input.filePath, admit);
+    case "session.archivePruning.reclaimPages":
+      return database.walMaintenance.reclaimFreePages({
+        maxPages: command.input.maxPages,
+        beforeMutation: () => admit("transaction"),
+        onCommit: () => admit("commit"),
+      });
+  }
 }

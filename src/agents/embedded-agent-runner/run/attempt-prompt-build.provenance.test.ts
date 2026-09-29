@@ -238,7 +238,7 @@ it("injects complete lifecycle results into requester prompts and acknowledges o
       publication.assertCurrent();
       persist(...runIds);
       await Promise.resolve();
-      publication.onCommitted?.();
+      publication.onCommitted?.(runIds);
     },
     clearPendingLifecycleError: vi.fn(),
     countPendingDescendantRuns: async () => 0,

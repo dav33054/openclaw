@@ -25,29 +25,46 @@ afterEach(() => {
 });
 
 describe("subagent run memory indexes", () => {
-  it("retains a selected registration through its own ACK but rejects a committed replacement ABA", () => {
-    const entry = createRun("selected", "agent:main:subagent:selected");
-    subagentRuns.set(entry.runId, entry);
-    const selected = subagentRuns.captureRegistrationOwnership(entry.childSessionKey, entry);
-    const preparing = subagentRuns.captureRegistrationOwnership(entry.childSessionKey);
-    try {
-      subagentRuns.commitOwnership(entry);
-      expect(selected.assertCurrent).not.toThrow();
-      expect(preparing.assertCurrent).toThrow("owner changed");
-      const replacement = createRun(entry.runId, entry.childSessionKey);
-      subagentRuns.set(entry.runId, replacement);
-      subagentRuns.commitOwnership(replacement);
-      expect(selected.assertCurrent).toThrow("owner changed");
-      subagentRuns.delete(replacement.runId);
-      subagentRuns.confirmRetirement(replacement);
+  it.each(["registration", "selection"] as const)(
+    "retains %s ownership through its own publication but rejects a committed replacement ABA",
+    (mode) => {
+      const entry = createRun("selected", "agent:main:subagent:selected");
       subagentRuns.set(entry.runId, entry);
-      subagentRuns.commitOwnership(entry);
-      expect(selected.assertCurrent).toThrow("owner changed");
-    } finally {
-      selected.release();
-      preparing.release();
-    }
-  });
+      if (mode === "selection") {
+        subagentRuns.commitOwnership(entry);
+      }
+      const first = subagentRuns.captureRegistrationOwnership(entry.childSessionKey, entry.runId);
+      const second = subagentRuns.captureRegistrationOwnership(
+        entry.childSessionKey,
+        entry.runId,
+        mode === "selection" ? entry : undefined,
+      );
+      const selected = mode === "registration" ? first : second;
+      const preparing = mode === "registration" ? second : first;
+      try {
+        expect(preparing.assertCurrent).not.toThrow();
+        if (mode === "registration") {
+          selected.accept(entry);
+        } else {
+          subagentRuns.commitOwnership(entry);
+        }
+        expect(selected.assertCurrent).not.toThrow();
+        expect(preparing.assertCurrent).toThrow("owner changed");
+        const replacement = createRun(entry.runId, entry.childSessionKey);
+        subagentRuns.set(entry.runId, replacement);
+        subagentRuns.commitOwnership(replacement);
+        expect(selected.assertCurrent).toThrow("owner changed");
+        subagentRuns.delete(replacement.runId);
+        subagentRuns.confirmRetirement(replacement);
+        subagentRuns.set(entry.runId, entry);
+        subagentRuns.commitOwnership(entry);
+        expect(selected.assertCurrent).toThrow("owner changed");
+      } finally {
+        selected.release();
+        preparing.release();
+      }
+    },
+  );
 
   it("publishes accepted ownership and retirement without exposing provisional map writes", () => {
     const changed = vi.fn();

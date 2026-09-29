@@ -57,8 +57,8 @@ vi.mock("../../../state/openclaw-state-worker-context.js", () => {
     },
   });
   return {
-    captureOpenClawStateWorkerContext: captureContext,
     captureOpenClawStateReadContext: captureContext,
+    captureOpenClawStateWorkerContext: captureContext,
   };
 });
 vi.mock("./subagent-session-reconciliation.js", () => ({
@@ -306,7 +306,7 @@ it.each([false, true])(
       withSubagentRegistryWriteAuthority(runIds, { context, ...callbacks }, async (authority) => {
         await publication.promise;
         authority.assertCurrent();
-        callbacks.onCommitted?.();
+        callbacks.onCommitted?.(authority.currentRunIds());
       }),
     );
     const claiming = f.manager.claimSubagentRunKill({ runId: entry.runId, expected: entry });

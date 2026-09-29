@@ -66,7 +66,7 @@ describe("ACP session metadata SQLite store", () => {
       const storePath = path.join(dir, "agents", "main", "agent", "openclaw-agent.sqlite");
       const sessionKey = "agent:main:proof";
       await replaceSessionEntry(
-        { agentId: "main", storePath, sessionKey },
+        { agentId: "main", storePath, sessionKey, env },
         { sessionId: "proof-session", updatedAt: 100 },
       );
       await upsertAcpSessionMeta({
@@ -83,6 +83,7 @@ describe("ACP session metadata SQLite store", () => {
           lastActivityAt: 100,
         }),
       });
+      await closeOpenClawAgentDatabasesAsync();
       await closeOpenClawStateDatabaseAsync();
       claimOpenClawStateOwnership("test-supervisor", { env: externalEnv });
       await closeOpenClawStateDatabaseAsync();

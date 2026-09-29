@@ -74,7 +74,7 @@ export function createLifecycleControllerFixture(
         throw new SubagentRegistryWriteError("not-committed", error);
       }
       await Promise.resolve();
-      publication.onCommitted?.();
+      publication.onCommitted?.(runIds);
     },
     clearPendingLifecycleError: vi.fn(),
     countPendingDescendantRuns: async () => 0,

@@ -131,8 +131,11 @@ class SubagentRunMap extends Map<string, SubagentRunRecord> {
   private readonly retirementScopes = new Set<SubagentRetirementScope>();
   private readonly registrationScopes = new Set<{
     childSessionKey: string;
+    runId: string;
     current: boolean;
-    expectedEntry?: SubagentRunRecord;
+    superseded: boolean;
+    sameRunSuperseded: boolean;
+    entry?: SubagentRunRecord;
   }>();
   private readonly completionAuthorities = new Map<SubagentRunRecord, CompletionCustody>();
   // A tombstone rejects stale callbacks without retaining closed Gateway/source contexts.
@@ -331,14 +334,45 @@ class SubagentRunMap extends Map<string, SubagentRunRecord> {
   }
 
   /** A committed successor remains superseding even if it retires before preparation finishes. */
-  captureRegistrationOwnership(childSessionKey: string, expectedEntry?: SubagentRunRecord) {
-    const scope = { childSessionKey, current: true, expectedEntry };
+  captureRegistrationOwnership(
+    childSessionKey: string,
+    runId: string,
+    expectedEntry?: SubagentRunRecord,
+  ) {
+    const scope: {
+      childSessionKey: string;
+      runId: string;
+      current: boolean;
+      superseded: boolean;
+      sameRunSuperseded: boolean;
+      entry?: SubagentRunRecord;
+    } = {
+      childSessionKey,
+      runId,
+      current: true,
+      superseded: false,
+      sameRunSuperseded: false,
+      entry: expectedEntry,
+    };
     this.registrationScopes.add(scope);
     return {
+      get superseded() {
+        return scope.superseded;
+      },
+      get sameRunSuperseded() {
+        return scope.sameRunSuperseded;
+      },
       assertCurrent: () => {
         if (!scope.current) {
           throw new Error("Subagent registration owner changed during preparation");
         }
+      },
+      accept: (entry: SubagentRunRecord) => {
+        if (!scope.current || entry.childSessionKey !== childSessionKey) {
+          throw new Error("Subagent registration owner changed before publication");
+        }
+        scope.entry = entry;
+        this.commitOwnership(entry);
       },
       release: () => {
         scope.current = false;
@@ -353,8 +387,10 @@ class SubagentRunMap extends Map<string, SubagentRunRecord> {
       return;
     }
     for (const scope of this.registrationScopes) {
-      if (scope.childSessionKey === entry.childSessionKey && scope.expectedEntry !== entry) {
+      if (scope.childSessionKey === entry.childSessionKey && scope.entry !== entry) {
         scope.current = false;
+        scope.superseded = true;
+        scope.sameRunSuperseded ||= scope.runId === entry.runId;
       }
     }
     for (const scope of this.retirementScopes) {
@@ -430,6 +466,8 @@ class SubagentRunMap extends Map<string, SubagentRunRecord> {
   override clear(): void {
     for (const scope of this.registrationScopes) {
       scope.current = false;
+      scope.superseded = true;
+      scope.sameRunSuperseded = true;
     }
     this.registrationScopes.clear();
     for (const entry of this.completionAuthorities.keys()) {
