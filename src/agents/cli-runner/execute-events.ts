@@ -75,7 +75,7 @@ export function createCliEventHandlers(params: {
     let item = projectAgentToolActivity({
       ...data,
       name: stripOpenClawMcpToolPrefix(data.name),
-      args: execution ? execution.args : data.args,
+      args: execution?.args ?? data.args,
     });
     if (execution?.args === undefined && execution?.requestedArgs !== undefined) {
       // Requested arguments can identify a quiet poll without proving command execution.
