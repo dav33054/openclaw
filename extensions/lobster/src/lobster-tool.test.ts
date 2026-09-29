@@ -6,6 +6,7 @@ import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import plugin from "../index.js";
+import * as lobsterRunner from "./lobster-runner.js";
 import { createLobsterTool } from "./lobster-tool.js";
 
 afterEach(() => vi.unstubAllEnvs());
@@ -47,6 +48,145 @@ describe("lobster plugin tool", () => {
     }
     expect(factory(fakeCtx())).toMatchObject({ name: "lobster" });
     expect(factory(fakeCtx({ sandboxed: true }))).toBeNull();
+  });
+
+  it("routes native Lobster LLM stages through host-owned isolated completion", async () => {
+    const complete = vi.fn().mockResolvedValue({
+      text: "```json\n{}\n```",
+      provider: "openai",
+      model: "openai/default-model",
+      usage: { inputTokens: 12, outputTokens: 2, totalTokens: 14 },
+    });
+    const runtime = {
+      version: "test",
+      llm: { complete },
+    } as unknown as OpenClawPluginApi["runtime"];
+    const runner = { run: vi.fn() };
+    const runnerFactory = vi
+      .spyOn(lobsterRunner, "createEmbeddedLobsterRunner")
+      .mockReturnValue(runner);
+    try {
+      createLobsterTool(fakeApi({ runtime }));
+      const adapter = runnerFactory.mock.calls[0]?.[0]?.llmAdapters?.openclaw;
+      if (!adapter) {
+        throw new Error("expected an OpenClaw LLM adapter");
+      }
+      const outputSchema = {
+        type: "object",
+        properties: { category: { type: "string" } },
+        required: ["category"],
+        additionalProperties: false,
+      };
+      const signal = new AbortController().signal;
+      const result = await adapter.invoke({
+        payload: {
+          prompt: "Classify this synthetic item",
+          artifacts: [{ kind: "text", text: "Picture day Thursday" }],
+          outputSchema,
+          metadata: { lane: "triage" },
+          schemaVersion: "v2",
+          retryContext: { attempt: 2, validationErrors: ["category is required"] },
+          temperature: 0.1,
+          maxOutputTokens: 128,
+        },
+        signal,
+      });
+
+      expect(complete).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          messages: [
+            {
+              role: "user",
+              content: JSON.stringify({
+                prompt: "Classify this synthetic item",
+                artifacts: [{ kind: "text", text: "Picture day Thursday" }],
+                outputSchema,
+                metadata: { lane: "triage" },
+                schemaVersion: "v2",
+                retryContext: { attempt: 2, validationErrors: ["category is required"] },
+              }),
+            },
+          ],
+          temperature: 0.1,
+          maxTokens: 128,
+          execution: { mode: "isolated-agent-runtime", timeoutMs: 30_000 },
+          purpose: "lobster.llm-invoke",
+          signal,
+        }),
+      );
+      expect(vi.mocked(complete).mock.calls[0]?.[0].model).toBeUndefined();
+      expect(result).toMatchObject({
+        ok: true,
+        result: {
+          model: "openai/default-model",
+          output: { text: "{}", data: {}, format: "json" },
+          usage: { inputTokens: 12, outputTokens: 2, totalTokens: 14 },
+        },
+      });
+    } finally {
+      runnerFactory.mockRestore();
+    }
+  });
+
+  it.each(["not-json", "null"])(
+    "distinguishes malformed output from JSON null: %s",
+    async (text) => {
+      const complete = vi.fn().mockResolvedValue({ text, model: "test-model" });
+      const runtime = { llm: { complete } } as unknown as OpenClawPluginApi["runtime"];
+      const runnerFactory = vi
+        .spyOn(lobsterRunner, "createEmbeddedLobsterRunner")
+        .mockReturnValue({ run: vi.fn() });
+      try {
+        createLobsterTool(fakeApi({ runtime }));
+        const adapter = runnerFactory.mock.calls[0]?.[0]?.llmAdapters?.openclaw;
+        if (!adapter) {
+          throw new Error("expected an OpenClaw LLM adapter");
+        }
+        const result = adapter.invoke({
+          payload: { prompt: "Return JSON", outputSchema: { type: ["object", "null"] } },
+        });
+        if (text === "null") {
+          await expect(result).resolves.toMatchObject({
+            ok: true,
+            result: { output: { text: "null", data: null, format: "json" } },
+          });
+        } else {
+          await expect(result).rejects.toThrow("returned invalid JSON");
+        }
+        expect(complete).toHaveBeenCalledTimes(1);
+      } finally {
+        runnerFactory.mockRestore();
+      }
+    },
+  );
+
+  it("propagates host model authorization rejection for an explicit workflow override", async () => {
+    const denied = new Error("Plugin LLM completion model is not allowlisted");
+    const complete = vi.fn().mockRejectedValue(denied);
+    const runtime = {
+      version: "test",
+      llm: { complete },
+    } as unknown as OpenClawPluginApi["runtime"];
+    const runnerFactory = vi
+      .spyOn(lobsterRunner, "createEmbeddedLobsterRunner")
+      .mockReturnValue({ run: vi.fn() });
+    try {
+      createLobsterTool(fakeApi({ runtime }));
+      const adapter = runnerFactory.mock.calls[0]?.[0]?.llmAdapters?.openclaw;
+      if (!adapter) {
+        throw new Error("expected an OpenClaw LLM adapter");
+      }
+      await expect(
+        adapter.invoke({
+          payload: { prompt: "Classify this synthetic item", model: "openai/blocked-model" },
+        }),
+      ).rejects.toBe(denied);
+      expect(complete).toHaveBeenCalledWith(
+        expect.objectContaining({ model: "openai/blocked-model" }),
+      );
+    } finally {
+      runnerFactory.mockRestore();
+    }
   });
 
   it("returns approval envelopes for ordinary runs", async () => {

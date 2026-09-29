@@ -41,6 +41,16 @@ export type LobsterRunner = {
   run: (params: LobsterRunnerParams) => Promise<LobsterEnvelope>;
 };
 
+type EmbeddedLlmAdapter = {
+  source?: string;
+  invoke: (params: {
+    env?: Record<string, string | undefined>;
+    args?: Record<string, unknown>;
+    payload: unknown;
+    signal?: AbortSignal;
+  }) => Promise<unknown>;
+};
+
 type EmbeddedToolContext = {
   cwd?: string;
   env?: Record<string, string | undefined>;
@@ -49,6 +59,7 @@ type EmbeddedToolContext = {
   stdout?: NodeJS.WritableStream;
   stderr?: NodeJS.WritableStream;
   signal?: AbortSignal;
+  llmAdapters?: Record<string, EmbeddedLlmAdapter>;
 };
 
 type EmbeddedToolEnvelope = {
@@ -170,6 +181,7 @@ async function detectWorkflowFile(candidate: string, cwd: string) {
 function createEmbeddedToolContext(
   params: LobsterRunnerParams,
   signal?: AbortSignal,
+  llmAdapters?: Record<string, EmbeddedLlmAdapter>,
 ): EmbeddedToolContext {
   const env = { ...process.env } as Record<string, string | undefined>;
   return {
@@ -180,6 +192,7 @@ function createEmbeddedToolContext(
     stdout: createLimitedSink(Math.max(1024, params.maxStdoutBytes), "stdout"),
     stderr: createLimitedSink(Math.max(1024, params.maxStdoutBytes), "stderr"),
     signal,
+    ...(llmAdapters ? { llmAdapters } : {}),
   };
 }
 
@@ -220,6 +233,7 @@ async function loadEmbeddedToolRuntimeFromPackage(): Promise<EmbeddedToolRuntime
 
 export function createEmbeddedLobsterRunner(options?: {
   loadRuntime?: () => Promise<EmbeddedToolRuntime>;
+  llmAdapters?: Record<string, EmbeddedLlmAdapter>;
 }): LobsterRunner {
   const loadRuntime = options?.loadRuntime ?? loadEmbeddedToolRuntimeFromPackage;
   let runtimePromise: Promise<EmbeddedToolRuntime> | undefined;
@@ -228,7 +242,7 @@ export function createEmbeddedLobsterRunner(options?: {
       runtimePromise ??= loadRuntime();
       const runtime = await runtimePromise;
       return await withTimeout(params.timeoutMs, async (signal) => {
-        const ctx = createEmbeddedToolContext(params, signal);
+        const ctx = createEmbeddedToolContext(params, signal, options?.llmAdapters);
         let envelope: EmbeddedToolEnvelope;
 
         if (params.action === "run") {
