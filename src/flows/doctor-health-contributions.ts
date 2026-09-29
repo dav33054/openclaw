@@ -561,6 +561,7 @@ async function runDoctorHealthContributionList(
         ctx.runtime.log(`Doctor: ${contribution.option.label} started`);
       }
       let outcome: "completed" | "warning" = "completed";
+      const warningCountBefore = ctx.updateWarnings?.length ?? 0;
       try {
         const run = async () => {
           try {
@@ -583,7 +584,11 @@ async function runDoctorHealthContributionList(
         if (ctx.configWriteRefusal) {
           // Later repairs consume the candidate. Stop before they persist state
           // derived from config that the writer deliberately left non-durable.
+          outcome = "warning";
           return;
+        }
+        if ((ctx.updateWarnings?.length ?? 0) > warningCountBefore) {
+          outcome = "warning";
         }
       } catch (error) {
         if (

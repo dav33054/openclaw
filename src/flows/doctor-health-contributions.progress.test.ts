@@ -27,4 +27,26 @@ describe("doctor health contribution progress", () => {
       expect.stringMatching(/^Doctor: Test progress completed \(\d+ms\)$/),
     );
   });
+
+  it("reports a warning when a contribution records a warning", async () => {
+    const ctx = createDoctorHealthFlowContext({
+      configPath: "/tmp/fake-openclaw.json",
+      prompter: createDoctorPrompterFixture(),
+    });
+    const contribution = createDoctorHealthContribution({
+      id: "doctor:test-warning",
+      label: "Test warning",
+      run: async (runCtx) => {
+        runCtx.updateWarnings = ["test warning"];
+      },
+    });
+
+    await runDoctorHealthContributionList(ctx, [contribution]);
+
+    expect(ctx.runtime.log).toHaveBeenNthCalledWith(1, "Doctor: Test warning started");
+    expect(ctx.runtime.log).toHaveBeenNthCalledWith(
+      2,
+      expect.stringMatching(/^Doctor: Test warning warning \(\d+ms\)$/),
+    );
+  });
 });
