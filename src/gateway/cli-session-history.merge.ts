@@ -15,6 +15,7 @@ import { isOpenClawCliImageCachePath } from "../agents/embedded-agent-runner/run
 import { stripInboundMetadata } from "../auto-reply/reply/strip-inbound-meta.js";
 import { isImageMediaFact, readPersistedMediaFacts } from "../media/media-facts.js";
 import { stripInlineDirectiveTagsForDisplay } from "../utils/directive-tags.js";
+import { dropJoinedToolTurnReplies } from "./cli-session-history.merge-tool-turns.js";
 
 const DEDUPE_TIMESTAMP_WINDOW_MS = 5 * 60 * 1000;
 
@@ -614,9 +615,11 @@ export function mergeImportedChatHistoryMessages(params: {
   let changed = false;
   let expanded = false;
   let nextOrder = merged.length;
+  const importedEntries: ComparableHistoryMessage[] = [];
   for (const message of params.importedMessages) {
     const externalIdentityKey = resolveImportedExternalIdentityKey(message);
     const imported = prepareComparableMessage(message, nextOrder, externalIdentityKey);
+    importedEntries.push(imported);
     if (externalIdentityKey) {
       const exactIdentityMatch = exactExternalIdentityIndex.get(externalIdentityKey);
       if (exactIdentityMatch) {
@@ -683,6 +686,7 @@ export function mergeImportedChatHistoryMessages(params: {
     changed = true;
     expanded = true;
   }
+  changed = dropJoinedToolTurnReplies(merged, importedEntries, consumedLocalCandidates) || changed;
   if (!changed) {
     return params.localMessages;
   }
