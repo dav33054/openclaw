@@ -97,6 +97,7 @@ type WorkerPlacementIdentity = {
   providerId: string;
   profileId: string;
   machine?: SessionPlacementMachine;
+  inference?: "worker";
 };
 
 export function readWorkerPlacementIdentity(
@@ -132,6 +133,17 @@ export function readWorkerPlacementIdentity(
   return {
     providerId: environment.providerId,
     profileId: environment.profileId,
+    ...(record.state === "active" &&
+    record.executionMode === "worker-turn" &&
+    environment.environmentId === record.environmentId &&
+    environment.state === "attached" &&
+    environment.providerId === DEVICE_WORKER_PROVIDER_ID &&
+    environment.nodeDeviceId &&
+    environment.attachedSessionIds.length === 1 &&
+    environment.attachedSessionIds[0] === record.sessionId &&
+    environment.inference === "worker"
+      ? { inference: "worker" as const }
+      : {}),
     ...(machine && Object.keys(machine).length ? { machine } : {}),
   };
 }
@@ -195,6 +207,7 @@ export function projectWorkerSessionPlacement(
   retryOnSend = false,
   options: { workerRuntimeInstall?: SessionPlacementWorkerRuntimeInstall } = {},
 ): SessionPlacement {
+  const { inference, ...provenance } = identity ?? {};
   const timing = {
     generation: record.generation,
     createdAtMs: record.createdAtMs,
@@ -216,7 +229,7 @@ export function projectWorkerSessionPlacement(
       return {
         state: "provisioning",
         ...timing,
-        ...identity,
+        ...provenance,
         ...(record.environmentId ? { environmentId: record.environmentId } : {}),
         ...(options.workerRuntimeInstall
           ? { workerRuntimeInstall: options.workerRuntimeInstall }
@@ -226,7 +239,7 @@ export function projectWorkerSessionPlacement(
       return {
         state: "syncing",
         ...timing,
-        ...identity,
+        ...provenance,
         environmentId: record.environmentId,
         workerBundleHash: record.workerBundleHash,
       };
@@ -234,7 +247,7 @@ export function projectWorkerSessionPlacement(
       return {
         state: "starting",
         ...timing,
-        ...identity,
+        ...provenance,
         environmentId: record.environmentId,
         workerBundleHash: record.workerBundleHash,
         workspaceBaseManifestRef: record.workspaceBaseManifestRef,
@@ -246,7 +259,7 @@ export function projectWorkerSessionPlacement(
       return {
         state: record.state,
         ...timing,
-        ...identity,
+        ...provenance,
         environmentId: record.environmentId,
         activeOwnerEpoch: record.activeOwnerEpoch,
         workerBundleHash: record.workerBundleHash,
@@ -258,6 +271,7 @@ export function projectWorkerSessionPlacement(
         ...(record.lastLiveEventAckCursor !== null
           ? { lastLiveEventAckCursor: record.lastLiveEventAckCursor }
           : {}),
+        ...(record.state === "active" && inference ? { inference } : {}),
         ...(record.state === "active" && diskSpace ? { diskSpace } : {}),
         ...(record.state === "active" && runner ? { runner } : {}),
         ...(record.state === "active" && options.workerRuntimeInstall
@@ -272,7 +286,7 @@ export function projectWorkerSessionPlacement(
     case "failed": {
       const retained = {
         ...timing,
-        ...identity,
+        ...provenance,
         ...(record.environmentId ? { environmentId: record.environmentId } : {}),
         ...(record.activeOwnerEpoch !== null ? { activeOwnerEpoch: record.activeOwnerEpoch } : {}),
         ...(record.workspaceBaseManifestRef

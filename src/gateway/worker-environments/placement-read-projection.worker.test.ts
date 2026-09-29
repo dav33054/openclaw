@@ -9,9 +9,16 @@ import {
   type OpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
 import { observeMainThreadSql } from "../../test-utils/main-thread-sql-spies.test-support.js";
+import {
+  readWorkerPlacementIdentity,
+  projectWorkerSessionPlacement,
+} from "./placement-projector.js";
 import { placementTurnOwner, type WorkerPlacementExecutionMode } from "./placement-record.js";
 import { createWorkerSessionPlacementStore } from "./placement-store.js";
-import { advancePlacementFixtureToActive } from "./placement-test-fixtures.js";
+import {
+  advancePlacementFixtureToActive,
+  writePlacementEnvironmentFixture,
+} from "./placement-test-fixtures.js";
 import { matchesWorkspaceResultClaim } from "./placement-workspace-result.js";
 import type { WorkerWorkspacePendingResult } from "./placement-workspace-result.types.js";
 
@@ -51,6 +58,37 @@ async function activePlacement(
 }
 
 describe("worker placement read projection", () => {
+  it("derives inference from the bound snapshot without rewriting either spelling", async () => {
+    vi.stubEnv("OPENCLAW_STATE_DIR", roots.make("placement-inference-snapshot-"));
+    const database = openOpenClawStateDatabase();
+    for (const inference of ["worker", "runtime-local"]) {
+      const sessionId = "snapshot-" + inference;
+      const environmentId = "environment-" + sessionId;
+      const profileSnapshot = { settings: { device: "paired-node", inference } };
+      writePlacementEnvironmentFixture(database, {
+        environmentId,
+        state: "attached",
+        ownerEpoch: 7,
+        attachedSessionIds: [sessionId],
+        providerId: "device",
+        profileId: "named-device",
+        nodeDeviceId: "paired-node",
+        profileSnapshot,
+      });
+      const { store, placement } = await activePlacement(database, sessionId);
+      const snapshot = await store.readProjection([sessionId]);
+      const environment = snapshot.environments.get(environmentId);
+      expect(environment).toMatchObject({ profileSnapshot, inference: "worker" });
+      const identity = readWorkerPlacementIdentity(placement, undefined, environment);
+      const projected = projectWorkerSessionPlacement(placement, undefined, undefined, identity);
+      expect(projected).toHaveProperty("inference", "worker");
+      expect(projected).not.toHaveProperty("profileSnapshot");
+      expect(
+        (await store.readProjection([sessionId])).environments.get(environmentId)?.profileSnapshot,
+      ).toEqual(profileSnapshot);
+    }
+  });
+
   it("reads placement, move, pending-result and environment facts off the host SQLite thread", async () => {
     const stateDir = roots.make("placement-projection-worker-");
     const otherStateDir = roots.make("placement-projection-other-");

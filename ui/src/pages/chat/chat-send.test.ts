@@ -1012,8 +1012,11 @@ describe("handleSendChat", () => {
     };
     await host.sessions.refresh({ agentId: "main", force: true });
     await host.sessions.refreshList(query);
-    expect(host.sessionsResult?.sessions[0]).toEqual(authoritativeRow);
-    expect(host.sessions.listSnapshot(query).result?.sessions[0]).toEqual(authoritativeRow);
+    // Canonical roster rows omit undefined fields, including cleared errors.
+    const expectedRow = { ...authoritativeRow };
+    delete expectedRow.lastRunError;
+    expect(host.sessionsResult?.sessions[0]).toStrictEqual(expectedRow);
+    expect(host.sessions.listSnapshot(query).result?.sessions[0]).toStrictEqual(expectedRow);
   });
 
   it("sends the idle conversational word stop as a normal message", async () => {

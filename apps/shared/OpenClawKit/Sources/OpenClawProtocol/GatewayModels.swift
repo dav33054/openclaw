@@ -26298,6 +26298,7 @@ public struct ActiveWorkerSessionPlacement: Codable, Sendable {
     public let lastliveeventackcursor: Int?
     public let workspaceresultconflict: [String: AnyCodable]?
     public let diskspace: SessionPlacementDiskSpace?
+    public let inference: String?
     public let workspaceresultreconciling: Bool?
     public let runner: SessionPlacementRunner?
     public let workerruntimeinstall: SessionPlacementWorkerRuntimeInstall?
@@ -26320,6 +26321,7 @@ public struct ActiveWorkerSessionPlacement: Codable, Sendable {
         lastliveeventackcursor: Int? = nil,
         workspaceresultconflict: [String: AnyCodable]? = nil,
         diskspace: SessionPlacementDiskSpace? = nil,
+        inference: String? = nil,
         workspaceresultreconciling: Bool? = nil,
         runner: SessionPlacementRunner? = nil,
         workerruntimeinstall: SessionPlacementWorkerRuntimeInstall? = nil)
@@ -26341,6 +26343,7 @@ public struct ActiveWorkerSessionPlacement: Codable, Sendable {
         self.lastliveeventackcursor = lastliveeventackcursor
         self.workspaceresultconflict = workspaceresultconflict
         self.diskspace = diskspace
+        self.inference = inference
         self.workspaceresultreconciling = workspaceresultreconciling
         self.runner = runner
         self.workerruntimeinstall = workerruntimeinstall
@@ -26364,6 +26367,7 @@ public struct ActiveWorkerSessionPlacement: Codable, Sendable {
         case lastliveeventackcursor = "lastLiveEventAckCursor"
         case workspaceresultconflict = "workspaceResultConflict"
         case diskspace = "diskSpace"
+        case inference
         case workspaceresultreconciling = "workspaceResultReconciling"
         case runner
         case workerruntimeinstall = "workerRuntimeInstall"
