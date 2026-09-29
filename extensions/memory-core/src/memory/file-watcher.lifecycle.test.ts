@@ -99,15 +99,14 @@ describe("Memory observation lifecycle", () => {
     const resume = createDeferred<void>();
     // oxlint-disable-next-line typescript/unbound-method -- Invoked below with the intercepted policy receiver via .call.
     const original = MemoryWatchPolicy.prototype.observations;
-    vi.spyOn(MemoryWatchPolicy.prototype, "observations").mockImplementation(async function (
-      this: MemoryWatchPolicy,
-      signal,
-    ) {
-      const groups = await original.call(this, signal);
-      entered.resolve();
-      await resume.promise;
-      return groups;
-    });
+    vi.spyOn(MemoryWatchPolicy.prototype, "observations").mockImplementation(
+      async function (this: MemoryWatchPolicy, signal) {
+        const groups = await original.call(this, signal);
+        entered.resolve();
+        await resume.promise;
+        return groups;
+      },
+    );
     const { watcher } = owner();
     const starting = watcher.start();
     await entered.promise;
@@ -168,15 +167,14 @@ describe("Memory observation lifecycle", () => {
     const resume = createDeferred<void>();
     // oxlint-disable-next-line typescript/unbound-method -- Invoked with the intercepted policy receiver.
     const original = MemoryWatchPolicy.prototype.observations;
-    vi.spyOn(MemoryWatchPolicy.prototype, "observations").mockImplementationOnce(async function (
-      this: MemoryWatchPolicy,
-      signal,
-    ) {
-      const groups = await original.call(this, signal);
-      entered.resolve();
-      await resume.promise;
-      return groups;
-    });
+    vi.spyOn(MemoryWatchPolicy.prototype, "observations").mockImplementationOnce(
+      async function (this: MemoryWatchPolicy, signal) {
+        const groups = await original.call(this, signal);
+        entered.resolve();
+        await resume.promise;
+        return groups;
+      },
+    );
     const entry = observer.observations[0]!;
     entry.dirty();
     await entered.promise;

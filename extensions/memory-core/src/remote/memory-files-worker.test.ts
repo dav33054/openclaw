@@ -71,24 +71,23 @@ it("revokes remote admission while startup is awaiting filesystem discovery", as
   // oxlint-disable-next-line typescript/unbound-method -- Called below with the intercepted owner.
   const original = MemoryWatchPolicy.prototype.observations;
   let admissionSignal: AbortSignal | undefined;
-  vi.spyOn(MemoryWatchPolicy.prototype, "observations").mockImplementation(async function (
-    this: MemoryWatchPolicy,
-    signal,
-  ) {
-    const groups = await original.call(this, signal);
-    admissionSignal = signal;
-    entered.resolve();
-    await resume.promise;
-    return groups;
-  });
+  vi.spyOn(MemoryWatchPolicy.prototype, "observations").mockImplementation(
+    async function (this: MemoryWatchPolicy, signal) {
+      const groups = await original.call(this, signal);
+      admissionSignal = signal;
+      entered.resolve();
+      await resume.promise;
+      return groups;
+    },
+  );
   // oxlint-disable-next-line typescript/unbound-method -- Called below with the intercepted owner.
   const originalClose = MemoryFileWatcher.prototype.close;
-  vi.spyOn(MemoryFileWatcher.prototype, "close").mockImplementation(function (
-    this: MemoryFileWatcher,
-  ) {
-    closing.resolve();
-    return originalClose.call(this);
-  });
+  vi.spyOn(MemoryFileWatcher.prototype, "close").mockImplementation(
+    function (this: MemoryFileWatcher) {
+      closing.resolve();
+      return originalClose.call(this);
+    },
+  );
   const worker = serveMemoryFiles({ workspace: state.workspaceDir, input, output, watch: true });
   try {
     input.write(request);
@@ -140,14 +139,14 @@ it.each(["input end", "output error"] as const)(
     });
     // oxlint-disable-next-line typescript/unbound-method -- Called below with the intercepted owner.
     const originalClose = MemoryFileWatcher.prototype.close;
-    vi.spyOn(MemoryFileWatcher.prototype, "close").mockImplementation(function (
-      this: MemoryFileWatcher,
-    ) {
-      closing.resolve();
-      const pending = originalClose.call(this);
-      void pending.then(retired.resolve, retired.reject);
-      return pending;
-    });
+    vi.spyOn(MemoryFileWatcher.prototype, "close").mockImplementation(
+      function (this: MemoryFileWatcher) {
+        closing.resolve();
+        const pending = originalClose.call(this);
+        void pending.then(retired.resolve, retired.reject);
+        return pending;
+      },
+    );
     const worker = serveMemoryFiles({ workspace: state.workspaceDir, input, output, watch: true });
     let finished = false;
     void worker.then(
