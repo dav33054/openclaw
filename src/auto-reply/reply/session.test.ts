@@ -4070,6 +4070,26 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
     }
   });
 
+  it("preserves sidebar category across /new and /reset", async () => {
+    const storePath = await makeStorePath("openclaw-reset-category-");
+    const sessionKey = "agent:main:telegram:dm:categorized";
+    const existingSessionId = "existing-session-category";
+    const cases = await runExplicitResetCases({
+      storePath,
+      sessionKey,
+      sessionId: existingSessionId,
+      entry: { category: "Projects" },
+    });
+
+    for (const { name, result, stored } of cases) {
+      expect(result.resetTriggered, name).toBe(true);
+      expect(result.sessionEntry.category, name).toBe("Projects");
+      expect(expectDefined(stored[sessionKey], "stored[sessionKey]").category, name).toBe(
+        "Projects",
+      );
+    }
+  });
+
   it("preserves usage family metadata across /new and /reset", async () => {
     const storePath = await makeStorePath("openclaw-reset-usage-family-");
     const sessionKey = "agent:main:telegram:dm:user-usage-family";
