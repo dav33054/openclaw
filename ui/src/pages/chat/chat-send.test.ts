@@ -73,6 +73,7 @@ import {
   steerQueuedChatMessage,
 } from "./chat-send-actions.ts";
 import type { ChatHost } from "./chat-send-contract.ts";
+import { registerChatSendPayloadLimitTests } from "./chat-send-payload-limits.test-support.ts";
 import { handleSendChat } from "./chat-send-submit.ts";
 import * as chatSendSupport from "./chat-send-support.ts";
 import { recordChatSendServerTiming } from "./chat-send-timing.ts";
@@ -921,6 +922,8 @@ function installPairClientPresentationCommand() {
 }
 
 describe("handleSendChat", () => {
+  registerChatSendPayloadLimitTests({ row, idleChatHistory });
+
   beforeEach(() => {
     vi.stubGlobal("sessionStorage", createStorageMock());
   });
