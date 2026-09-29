@@ -466,16 +466,11 @@ describe("handleDiscordMessagingAction", () => {
     expect(listThreadsDiscord).not.toHaveBeenCalled();
   });
 
-  it("requires guild-wide authorization for active Discord thread lists", async () => {
+  it("requires guild-wide authorization for unscoped active Discord thread lists", async () => {
     const cfg = discordGuildChannelsCfg({ "222": { enabled: true } });
 
     await expect(
-      handleMessagingAction(
-        "threadList",
-        { guildId: "111", channelId: "222" },
-        enableAllActions,
-        cfg,
-      ),
+      handleMessagingAction("threadList", { guildId: "111" }, enableAllActions, cfg),
     ).rejects.toThrow(
       "Discord active thread lists require a wildcard channel allowlist so each read target can be authorized.",
     );
