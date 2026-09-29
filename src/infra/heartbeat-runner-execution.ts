@@ -405,9 +405,12 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
   // see a projection target the resolver already declined to deliver to.
   const internalProjection =
     resolvedDelivery.reason === "target-none" ? undefined : projectionCandidate;
-  // A completion owned by a WebChat session answers in that session. The heartbeat
-  // target (an explicit channel, or the owner route) is for heartbeat output and must
-  // not capture it; mixed batches keep the resolved route for their other events.
+  // A completion owned by an internal session (the same eligibility as the routeless
+  // projection above: Control UI/WebChat and other operator-owned internal sessions)
+  // answers in that session. The heartbeat target is for heartbeat output and must not
+  // capture it. Mixed batches keep the resolved route for their other events. If the
+  // session write fails, the events stay queued for a later wake; there is no channel
+  // fallback.
   const sessionOwnedCompletion =
     internalProjection !== undefined &&
     preflight.pendingEventEntries.length > 0 &&
