@@ -6,11 +6,12 @@ import { createVllmQwenThinkingWrapper, wrapVllmProviderStream } from "./stream.
 function capturePayload(params: {
   format: "chat-template" | "top-level";
   thinkingLevel?: "off" | "low" | "medium" | "high" | "xhigh" | "max";
+  initialPayload?: Record<string, unknown>;
   model?: Partial<Model<"openai-completions">>;
 }): Record<string, unknown> {
   let captured: Record<string, unknown> = {};
   const baseStreamFn: StreamFn = (_model, _context, options) => {
-    const payload = {};
+    const payload = { ...params.initialPayload };
     options?.onPayload?.(payload, _model);
     captured = payload;
     return {} as ReturnType<StreamFn>;
@@ -37,6 +38,23 @@ function capturePayload(params: {
 }
 
 describe("createVllmQwenThinkingWrapper", () => {
+  it("keeps binary chat-template thinking at the template default effort", () => {
+    expect(
+      capturePayload({
+        format: "chat-template",
+        thinkingLevel: "low",
+        initialPayload: {
+          chat_template_kwargs: { enable_thinking: true, reasoning_effort: "low" },
+        },
+      }),
+    ).toEqual({
+      chat_template_kwargs: {
+        enable_thinking: true,
+        preserve_thinking: true,
+      },
+    });
+  });
+
   it("maps Qwen top-level thinking format to enable_thinking", () => {
     expect(capturePayload({ format: "top-level", thinkingLevel: "off" })).toEqual({
       enable_thinking: false,

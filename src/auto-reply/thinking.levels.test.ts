@@ -460,6 +460,38 @@ describe("listThinkingLevels", () => {
     expect(listThinkingLevels("claude-cli", "company-fable", catalog)).toEqual(["off"]);
   });
 
+  it("defaults Qwen chat-template models that declare efforts to high", () => {
+    providerRuntimeMocks.resolveProviderThinkingProfile.mockReturnValue(null);
+    const declaredCompat = {
+      thinkingFormat: "qwen-chat-template",
+      supportedReasoningEfforts: ["low", "medium", "xhigh"],
+    };
+    const catalog = [
+      { provider: "local-qwen", id: "qwen-template", reasoning: true, compat: declaredCompat },
+      {
+        provider: "local-qwen",
+        id: "qwen-template-no-high",
+        reasoning: true,
+        compat: declaredCompat,
+        thinkingLevelMap: { high: null },
+      },
+      {
+        provider: "local-qwen",
+        id: "qwen-template-undeclared",
+        reasoning: true,
+        compat: { thinkingFormat: "qwen-chat-template" },
+      },
+      { provider: "local-qwen", id: "generic", reasoning: true },
+    ];
+    const resolveDefault = (model: string) =>
+      resolveThinkingDefaultForModel({ provider: "local-qwen", model, catalog });
+
+    expect(resolveDefault("qwen-template")).toBe("high");
+    expect(resolveDefault("qwen-template-no-high")).toBe("medium");
+    expect(resolveDefault("qwen-template-undeclared")).toBe("medium");
+    expect(resolveDefault("generic")).toBe("medium");
+  });
+
   it("honors provider-owned thinking maps before compat and derives OpenClaw Ultra", () => {
     const catalog = catalogFor("custom", "reasoning-model", {
       reasoning: true,

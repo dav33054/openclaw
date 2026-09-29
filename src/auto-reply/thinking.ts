@@ -310,7 +310,14 @@ function resolveModelThinkingProfile(params: ThinkingProfileParams): ResolvedThi
     return buildOffOnlyThinkingProfile();
   }
 
-  const profile = buildBaseThinkingProfile();
+  // Chat templates that declare their efforts receive the selected level instead of applying
+  // their own default (xhigh for Qwen 3.8). High keeps an unset level near that depth rather
+  // than the generic medium fallback; undeclared templates never receive a level.
+  const declaresChatTemplateEfforts =
+    context.compat?.thinkingFormat === "qwen-chat-template" &&
+    context.compat.supportsReasoningEffort !== false &&
+    (context.compat.supportedReasoningEfforts?.length ?? 0) > 0;
+  const profile = buildBaseThinkingProfile(declaresChatTemplateEfforts ? "high" : undefined);
   appendCatalogAdvancedThinkingLevels(profile, context.compat, context.thinkingLevelMap);
   return normalizeThinkingProfile(profile, context.thinkingLevelMap, mappedLevels);
 }
