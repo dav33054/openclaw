@@ -8,6 +8,7 @@ import type {
   ChannelResolveKind,
   ChannelResolveResult,
 } from "../../channels/plugins/types.adapters.js";
+import type { ChannelMessagingAdapter } from "../../channels/plugins/types.core.js";
 import { resolveCommandConfigWithSecrets } from "../../cli/command-config-resolution.js";
 import { formatCliCommand } from "../../cli/command-format.js";
 import { getChannelsCommandSecretTargetIds } from "../../cli/command-secret-targets.js";
@@ -56,6 +57,7 @@ function detectAutoKindForPlugin(
     meta?: {
       aliases?: readonly string[];
     };
+    messaging?: Pick<ChannelMessagingAdapter, "inferTargetChatType">;
   },
 ): ChannelResolveKind {
   const generic = detectAutoKind(input);
@@ -63,6 +65,17 @@ function detectAutoKindForPlugin(
     return generic;
   }
   const trimmed = input.trim();
+  try {
+    const chatType = plugin.messaging?.inferTargetChatType?.({ to: trimmed });
+    if (chatType === "direct") {
+      return "user";
+    }
+    if (chatType === "group" || chatType === "channel") {
+      return "group";
+    }
+  } catch {
+    // Some plugins only accept resolved IDs here; names still need directory lookup.
+  }
   const lowered = normalizeLowercaseStringOrEmpty(trimmed);
   const prefixes = [plugin.id, ...(plugin.meta?.aliases ?? [])]
     .map((entry) => normalizeOptionalLowercaseString(entry))
