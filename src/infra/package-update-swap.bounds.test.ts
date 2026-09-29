@@ -8,6 +8,7 @@ import { withTestDir } from "../test-helpers/temp-dir.js";
 import {
   createPackageIntegrityReader,
   PackageIntegrityLimitError,
+  PackageIntegrityTimeoutError,
 } from "./package-update-integrity.js";
 import { swapStagedPackageInstall, type PackageUpdateTransaction } from "./package-update-swap.js";
 import { createPackageSwapFixture } from "./package-update-swap.test-support.js";
@@ -35,6 +36,31 @@ function captureReaderLogs() {
 }
 
 describe("package verification bounds", () => {
+  it("keeps a fresh reader usable after a wall-clock jump forward", async () => {
+    await withTestDir({ prefix: "openclaw-integrity-clock-forward-" }, async (base) => {
+      const reader = createPackageIntegrityReader(1000);
+      const realNow = Date.now();
+      vi.spyOn(Date, "now").mockReturnValue(realNow + 60_000);
+      await expect(reader.entries(base)).resolves.toEqual([]);
+    });
+  });
+
+  it("bounds a pending read despite a wall-clock jump backward", async () => {
+    await withTestDir({ prefix: "openclaw-integrity-clock-backward-" }, async (base) => {
+      let monotonicNow = performance.now();
+      vi.spyOn(performance, "now").mockImplementation(() => monotonicNow);
+      const reader = createPackageIntegrityReader(15);
+      const realNow = Date.now();
+      const opendir = fs.opendir.bind(fs);
+      vi.spyOn(fs, "opendir").mockImplementation(async (...args) => {
+        monotonicNow += 20;
+        return opendir(...args);
+      });
+      vi.spyOn(Date, "now").mockReturnValue(realNow - 60_000);
+      await expect(reader.entries(base)).rejects.toBeInstanceOf(PackageIntegrityTimeoutError);
+    });
+  });
+
   it("distinguishes entry and byte budget exhaustion from integrity failures", async () => {
     await withTestDir({ prefix: "openclaw-integrity-budget-type-" }, async (base) => {
       const { packageRoot, launcher } = await createPackageSwapFixture(base);
@@ -62,8 +88,8 @@ describe("package verification bounds", () => {
     async ({ timeoutMs, elapsedMs, incomplete }) => {
       await withTestDir({ prefix: "openclaw-baseline-budget-" }, async (base) => {
         const { params, packageRoot, launcher } = await createPackageSwapFixture(base);
-        let now = Date.now();
-        vi.spyOn(Date, "now").mockImplementation(() => now);
+        let now = performance.now();
+        vi.spyOn(performance, "now").mockImplementation(() => now);
         const lstat = fs.lstat.bind(fs);
         let delayed = false;
         vi.spyOn(fs, "lstat").mockImplementation(async (...args) => {
@@ -125,10 +151,10 @@ describe("package verification bounds", () => {
           expect((await fs.stat(retained)).ino).toBe(before.ino);
         }
         const target = phase === "retained" ? retained : runtime;
-        const now = Date.now.bind(Date);
+        const now = performance.now();
         const open = fs.open.bind(fs);
         let elapsed = 0;
-        vi.spyOn(Date, "now").mockImplementation(() => now() + elapsed);
+        vi.spyOn(performance, "now").mockImplementation(() => now + elapsed);
         vi.spyOn(fs, "open").mockImplementation(async (...args) => {
           if (elapsed === 0 && String(args[0]) === target) {
             elapsed = 31_000;
@@ -198,7 +224,7 @@ describe("package verification bounds", () => {
             expect((await fs.stat(packageRoot)).ino).toBe(original.ino);
             return;
           }
-          expect(result.status, result.step.stderrTail ?? "").toBe("committed");
+          expect(result.status).toBe("committed");
           expect(beforeActivate).toHaveBeenCalledOnce();
           expect(result.step.advisory?.message).toContain(
             "baseline package fingerprint incomplete",
@@ -419,8 +445,8 @@ describe("package verification bounds", () => {
         const read = vi.spyOn(handle, "read");
         // Expire only the injected stall; unrelated filesystem latency must not
         // consume the separate launcher and recovery-observation budgets.
-        let now = Date.now();
-        vi.spyOn(Date, "now").mockImplementation(() => now);
+        let now = performance.now();
+        vi.spyOn(performance, "now").mockImplementation(() => now);
         const open = vi.spyOn(fs, "open").mockImplementation(async (...args) => {
           if (String(args[0]) !== path.join(packageRoot, "dist", "index.js")) {
             return realOpen(...args);
@@ -439,7 +465,7 @@ describe("package verification bounds", () => {
         const beforeActivate = vi.fn();
         const onLiveMutation = vi.fn();
         const observations = captureReaderLogs();
-        const started = performance.now();
+        const started = Date.now();
         try {
           const result = await swapStagedPackageInstall({
             ...params,
@@ -447,11 +473,11 @@ describe("package verification bounds", () => {
             onLiveMutation,
             timeoutMs: 40,
           });
-          expect(result.status).toBe("committed");
+          expect(result.status, result.step.stderrTail ?? "").toBe("committed");
           expect(result.step.advisory?.message).toContain(
             "baseline package fingerprint incomplete",
           );
-          expect(performance.now() - started).toBeLessThan(2000);
+          expect(Date.now() - started).toBeLessThan(2000);
           expect(beforeActivate).toHaveBeenCalledOnce();
           expect(onLiveMutation).toHaveBeenCalledOnce();
           expect(
@@ -470,11 +496,11 @@ describe("package verification bounds", () => {
             readerId: begin!.readerId,
             outcome: "timed-out",
             budgetMs: 40,
-            deadlineClock: "wall",
+            deadlineClock: "monotonic",
           });
           // A pending close may accompany the stalled read. Neither is a joined OS operation.
           expect(Number(settled!.pendingIo)).toBeGreaterThan(0);
-          expect(settled!.deadlineAtUnixMs).toBe(begin!.deadlineAtUnixMs);
+          expect(settled!.deadlineAtMonotonicMs).toBe(begin!.deadlineAtMonotonicMs);
           expect(settled!.elapsedMs).toBe(
             Number(settled!.settledAtMonotonicMs) - Number(begin!.startedAtMonotonicMs),
           );
