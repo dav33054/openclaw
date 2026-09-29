@@ -4,15 +4,22 @@ import {
   modelFallbackOverrideFromAvailability,
   resolveModelFallbackAvailability,
 } from "../../agents/agent-scope.js";
-import { findModelInCatalog, modelSupportsInput } from "../../agents/model-catalog-lookup.js";
+import {
+  findModelInCatalog,
+  modelSupportsInput,
+  prepareModelRunCapabilities,
+  type PreparedModelThinkingCapability,
+} from "../../agents/model-catalog-lookup.js";
 import { modelTransportRoutesMatch } from "../../agents/model-compat-catalog.js";
 import {
   findConfiguredProviderModel,
   resolveMergedModelProviderConfig,
 } from "../../config/model-provider-config.js";
 import { isReasoningTagProvider } from "../../utils/provider-utils.js";
+import { needsThinkHydration, normalizeThinkingCatalogProviders } from "../../agents/thinking-runtime.js";
 import type { resolveProviderScopedAuthProfile } from "./agent-runner-auth-profile.js";
 import type { FollowupRun } from "./queue.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 
 /** Builds model fallback options for an embedded follow-up run. */
 export function resolveModelFallbackOptions(
@@ -82,6 +89,40 @@ export async function resolveRunModelHasVision(params: {
   return modelSupportsInput(findModelInCatalog(catalog, provider, model), "image");
 }
 
+/** Hydrates route-specific thinking metadata for an embedded reply candidate. */
+export async function resolveRunModelThinkingCapability(params: {
+  config: OpenClawConfig;
+  provider: string;
+  model: string;
+  agentRuntime: string;
+  agentId: string;
+  agentDir: string;
+  workspaceDir: string;
+  thinkingCatalog?: FollowupRun["run"]["thinkingCatalog"];
+}): Promise<PreparedModelThinkingCapability | undefined> {
+  let thinkingCatalog = params.thinkingCatalog;
+  if (
+    needsThinkHydration(thinkingCatalog, params.provider, params.model, params.agentRuntime)
+  ) {
+    const { loadProviderScopedThinkingCatalog } =
+      await import("../../agents/model-catalog.runtime.js");
+    thinkingCatalog = normalizeThinkingCatalogProviders(
+      await loadProviderScopedThinkingCatalog({
+        config: params.config,
+        provider: params.provider,
+        model: params.model,
+        agentId: params.agentId,
+        agentDir: params.agentDir,
+        workspaceDir: params.workspaceDir,
+      }),
+    );
+  }
+  return prepareModelRunCapabilities(
+    [thinkingCatalog, []],
+    [params.provider, params.model, params.agentRuntime],
+  ).modelThinkingCapability;
+}
+
 /** Builds the shared embedded-agent run params from a queued follow-up run. */
 export async function buildEmbeddedRunBaseParams(params: {
   run: FollowupRun["run"];
@@ -95,6 +136,18 @@ export async function buildEmbeddedRunBaseParams(params: {
   const config = params.run.config;
   const { modelFallbackAvailability, fallbacksOverride: modelFallbacksOverride } =
     resolveModelFallbackOptions(params.run);
+  const modelThinkingCapability = params.agentRuntime
+    ? await resolveRunModelThinkingCapability({
+        config,
+        provider: params.provider,
+        model: params.model,
+        agentRuntime: params.agentRuntime,
+        agentId: params.run.agentId,
+        agentDir: params.run.agentDir,
+        workspaceDir: params.run.workspaceDir,
+        thinkingCatalog: params.run.thinkingCatalog,
+      })
+    : undefined;
   const enforceFinalTag =
     !params.run.skipProviderRuntimeHints &&
     (params.run.enforceFinalTag ||
@@ -139,6 +192,7 @@ export async function buildEmbeddedRunBaseParams(params: {
     provider: params.provider,
     model: params.model,
     modelHasVision: await resolveRunModelHasVision(params),
+    ...(modelThinkingCapability ? { modelThinkingCapability } : {}),
     requestedRouteResolution: "resolved" as const,
     modelSelectionLocked: params.run.modelSelectionLocked,
     modelFallbackAvailability,
