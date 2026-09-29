@@ -33,6 +33,10 @@ import { resolveAuthProfileDatabasePath } from "./auth-profiles/sqlite.js";
 import type { AuthProfileStore } from "./auth-profiles/types.js";
 import { MODELS_JSON_STATE, type ModelsJsonReadyResult } from "./models-config-state.js";
 import { planOpenClawModelsJson, type PreparedModelsConfigContext } from "./models-config.plan.js";
+import {
+  capturePluginModelCatalogAuth,
+  type PluginModelCatalogAuthSnapshot,
+} from "./plugin-model-catalog-auth.js";
 import { repairPluginModelCatalogTransportMetadata } from "./plugin-model-catalog-repair.js";
 import {
   decodePluginModelCatalogRelativePathPluginId,
@@ -165,6 +169,7 @@ function materializePlannedPluginCatalogs(
 function writePluginCatalogsForModelsJson(params: {
   agentDir: string;
   pluginCatalogWrites?: Record<string, string>;
+  authSnapshot: PluginModelCatalogAuthSnapshot;
 }): boolean {
   if (!params.pluginCatalogWrites) {
     return false;
@@ -172,6 +177,7 @@ function writePluginCatalogsForModelsJson(params: {
   return replacePersistedPluginModelCatalogs({
     agentDir: params.agentDir,
     pluginCatalogWrites: params.pluginCatalogWrites,
+    authSnapshot: params.authSnapshot,
   });
 }
 
@@ -296,6 +302,7 @@ export async function ensureOpenClawModelsJson(
 
   const pending = MODELS_JSON_STATE.writeQueue.enqueue(targetPath, async () => {
     const existingModelsFile = await readExistingModelsFile(targetPath);
+    const authSnapshot = capturePluginModelCatalogAuth(agentDir, context.env);
     const plan = await planOpenClawModelsJson({
       context,
       existingRaw: existingModelsFile.raw,
@@ -307,6 +314,7 @@ export async function ensureOpenClawModelsJson(
       const wrotePluginCatalog = writePluginCatalogsForModelsJson({
         agentDir,
         pluginCatalogWrites: plan.pluginCatalogWrites,
+        authSnapshot,
       });
       if (plan.action === "noop") {
         await ensureModelsFileModeForModelsJson(targetPath);
@@ -325,6 +333,7 @@ export async function ensureOpenClawModelsJson(
     const wrotePluginCatalog = writePluginCatalogsForModelsJson({
       agentDir,
       pluginCatalogWrites: plan.pluginCatalogWrites,
+      authSnapshot,
     });
     return { agentDir, wrote: wroteRoot || wrotePluginCatalog };
   });

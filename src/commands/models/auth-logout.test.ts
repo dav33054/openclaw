@@ -7,6 +7,13 @@ import {
   createApiKeyCredential,
   createAuthProfileStoreFixture,
 } from "../../agents/auth-profiles/credential-fixtures.test-support.js";
+import { withAuthProfileTestState } from "../../agents/auth-profiles/profile-mutations.test-support.js";
+import { removeAuthProfilesAcrossOwnerStores } from "../../agents/auth-profiles/profiles.js";
+import {
+  loadAuthProfileStoreWithoutExternalProfiles,
+  saveAuthProfileStore,
+} from "../../agents/auth-profiles/store-runtime.js";
+import * as catalogs from "../../agents/plugin-model-catalog.js";
 import { registerModelsCli } from "../../cli/models-cli.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createDirectChatContext } from "../../gateway/server-chat.agent-events.test-helpers.js";
@@ -416,6 +423,70 @@ describe("models auth logout", () => {
     });
     expect(liveConfig.auth?.order?.openai).toEqual([profileId]);
     expect(liveConfig.models?.providers?.openai?.apiKey).toBe(profileId);
+  });
+
+  it("restores the credential and config after final catalog cleanup fails, then permits retry", async () => {
+    await withAuthProfileTestState("openclaw-logout-final-scrub-", async ({ agentDir }) => {
+      const profileId = "openai:manual";
+      const credential = createApiKeyCredential("openai", "retryable-secret");
+      saveAuthProfileStore(createAuthProfileStoreFixture({ [profileId]: credential }), agentDir);
+      const originalConfig: OpenClawConfig = {
+        auth: {
+          profiles: { [profileId]: { provider: "openai", mode: "api_key" } },
+          order: { openai: [profileId] },
+        },
+      };
+      let liveConfig = structuredClone(originalConfig);
+      mocks.loadModelsConfig.mockImplementation(async () => liveConfig);
+      mocks.ensureAuthProfileStoreWithoutExternalProfiles.mockImplementation(() =>
+        loadAuthProfileStoreWithoutExternalProfiles(agentDir),
+      );
+      mocks.updateConfig.mockImplementation(
+        async (
+          mutate: (
+            cfg: OpenClawConfig,
+            context: { runtimeConfig: OpenClawConfig },
+          ) => OpenClawConfig | Promise<OpenClawConfig>,
+        ) => {
+          liveConfig = await mutate(liveConfig, { runtimeConfig: liveConfig });
+          return liveConfig;
+        },
+      );
+      mocks.removeAuthProfilesAcrossOwnerStores.mockImplementation((params) =>
+        removeAuthProfilesAcrossOwnerStores({ ...params, agentDir }),
+      );
+      const scrub = catalogs.removePersistedPluginModelCatalogCredentials;
+      let calls = 0;
+      const cleanup = vi
+        .spyOn(catalogs, "removePersistedPluginModelCatalogCredentials")
+        .mockImplementation(async (params) => {
+          calls += 1;
+          if (calls === 2) {
+            expect(
+              loadAuthProfileStoreWithoutExternalProfiles(agentDir).profiles[profileId],
+            ).toBeUndefined();
+            throw new Error("synthetic final catalog write failure");
+          }
+          await scrub(params);
+        });
+      try {
+        await expect(runRegisteredLogout(profileId)).rejects.toThrow(
+          "saved credentials were restored",
+        );
+        expect(loadAuthProfileStoreWithoutExternalProfiles(agentDir).profiles[profileId]).toEqual(
+          credential,
+        );
+        expect(liveConfig.auth).toEqual(originalConfig.auth);
+        await runRegisteredLogout(profileId);
+        expect(
+          loadAuthProfileStoreWithoutExternalProfiles(agentDir).profiles[profileId],
+        ).toBeUndefined();
+        expect(liveConfig.auth?.profiles?.[profileId]).toBeUndefined();
+        expect(liveConfig.auth?.order?.openai).toBeUndefined();
+      } finally {
+        cleanup.mockRestore();
+      }
+    });
   });
 
   it("restores only surviving references after partial multi-store removal", async () => {

@@ -831,6 +831,88 @@ describe("Git-backed SQLite snapshots", () => {
     }
   });
 
+  it.each([false, true])(
+    "redacts catalog credentials only for secret-excluded backups (exclude=%s)",
+    async (excludeSecrets) => {
+      const root = await tempRoot();
+      const source = path.join(root, "source.sqlite");
+      const dump = path.join(root, "dump");
+      createAgentFixture(source, "main");
+      const catalog = {
+        generatedBy: "openclaw-plugin-model-catalog-v1",
+        providers: {
+          fixture: {
+            api: "openai-completions",
+            apiKey: "provider-secret",
+            headers: { Authorization: "Bearer header-secret" },
+            models: [{ id: "model", apiKey: "model-secret" }],
+          },
+        },
+      };
+      const database = new DatabaseSync(source);
+      try {
+        database.exec("CREATE TABLE cache_entries (scope TEXT, key TEXT, value_json TEXT)");
+        const insert = database.prepare("INSERT INTO cache_entries VALUES (?, ?, ?)");
+        for (const scope of ["plugin-model-catalog-v1", "plugin-model-catalog-migration-v1"]) {
+          insert.run(scope, "fixture", JSON.stringify(catalog));
+          insert.run(scope, "broken", '{"apiKey":"malformed-secret"');
+        }
+        insert.run("unrelated-cache", "keep", '{"value":"retained"}');
+      } finally {
+        database.close();
+      }
+      const manifest = await dumpGitBackupDatabase({
+        snapshotPath: source,
+        outputPath: dump,
+        identity: { role: "agent", agentId: "main" },
+        excludeSecrets,
+      });
+      const rows = (await fs.readFile(path.join(dump, "tables", "cache_entries.jsonl"), "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      for (const row of rows.filter((entry) => entry.key === "fixture")) {
+        expect(JSON.parse(row.value_json)).toEqual(
+          excludeSecrets
+            ? {
+                ...catalog,
+                providers: {
+                  fixture: {
+                    api: "openai-completions",
+                    headers: {},
+                    models: [{ id: "model" }],
+                  },
+                },
+              }
+            : catalog,
+        );
+      }
+      expect(rows).toContainEqual({
+        scope: "unrelated-cache",
+        key: "keep",
+        value_json: '{"value":"retained"}',
+      });
+      expect(rows.filter((entry) => entry.key === "broken")).toEqual(
+        excludeSecrets
+          ? []
+          : [
+              {
+                scope: "plugin-model-catalog-v1",
+                key: "broken",
+                value_json: '{"apiKey":"malformed-secret"',
+              },
+              {
+                scope: "plugin-model-catalog-migration-v1",
+                key: "broken",
+                value_json: '{"apiKey":"malformed-secret"',
+              },
+            ],
+      );
+      expect(manifest.userVersion).toBe(OPENCLAW_AGENT_SCHEMA_VERSION);
+      expect(manifest.tables.cache_entries).toMatchObject({ rows: excludeSecrets ? 3 : 5 });
+    },
+  );
+
   it("omits secret tables and reports the restore gap", async () => {
     const root = await tempRoot();
     const source = path.join(root, "source.sqlite");

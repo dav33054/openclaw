@@ -52,3 +52,53 @@ export function repairPluginModelCatalogTransportMetadata(
     removedModelCount,
   };
 }
+
+/** Returns null for unusable generated rows, which must not retain or export unknown secrets. */
+export function stripPluginModelCatalogCredentials(
+  contents: string,
+  credentials?: ReadonlySet<string>,
+): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(contents);
+  } catch {
+    return null;
+  }
+  if (!isGeneratedPluginModelCatalog(parsed) || !isRecord(parsed.providers)) {
+    return null;
+  }
+  let changed = false;
+  const matches = (value: unknown): boolean =>
+    typeof value === "string" &&
+    (credentials === undefined ||
+      credentials.has(value) ||
+      (value.startsWith("Bearer ") && credentials.has(value.slice(7))));
+  const strip = (entry: Record<string, unknown>) => {
+    if (entry.apiKey !== undefined && (credentials === undefined || matches(entry.apiKey))) {
+      delete entry.apiKey;
+      changed = true;
+    }
+    if (isRecord(entry.headers)) {
+      for (const [name, value] of Object.entries(entry.headers)) {
+        if (matches(value)) {
+          delete entry.headers[name];
+          changed = true;
+        }
+      }
+    }
+  };
+  for (const provider of Object.values(parsed.providers)) {
+    if (!isRecord(provider)) {
+      continue;
+    }
+    strip(provider);
+    if (Array.isArray(provider.models)) {
+      for (const model of provider.models) {
+        if (isRecord(model)) {
+          strip(model);
+        }
+      }
+    }
+  }
+  return changed ? JSON.stringify(parsed) : contents;
+}
