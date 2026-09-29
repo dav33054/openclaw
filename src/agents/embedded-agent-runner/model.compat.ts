@@ -55,7 +55,8 @@ export function resolveMergedConfiguredModelReasoning(params: {
 function isVllmQwenThinkingCompat(params: { provider: string; compat?: unknown }): boolean {
   const thinkingFormat = readCompatThinkingFormat(params.compat);
   return (
-    normalizeProviderId(params.provider) === "vllm" &&
+    (normalizeProviderId(params.provider) === "vllm" ||
+      normalizeProviderId(params.provider) === "bailian") &&
     (thinkingFormat === "qwen" || thinkingFormat === "qwen-chat-template")
   );
 }
