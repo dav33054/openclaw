@@ -117,6 +117,7 @@ const mocks = vi.hoisted(() => ({
   noteMacDisabledGatewayLaunchAgent: vi.fn(),
   noteMacLaunchctlGatewayEnvOverrides: vi.fn(),
   noteMacStaleOpenClawUpdateLaunchdJobs: vi.fn(),
+  maybeRepairMacGatewayServiceEnvQuotes: vi.fn(),
   gatewaySecretInputPathCanWin: vi.fn(),
   readGatewaySecretInputValue: vi.fn((..._args: unknown[]) => undefined as string | undefined),
   checkGatewayHealth: vi.fn(async () => ({
@@ -422,6 +423,7 @@ vi.mock("../commands/doctor-platform-notes.js", () => ({
   noteMacDisabledGatewayLaunchAgent: mocks.noteMacDisabledGatewayLaunchAgent,
   noteMacLaunchctlGatewayEnvOverrides: mocks.noteMacLaunchctlGatewayEnvOverrides,
   noteMacStaleOpenClawUpdateLaunchdJobs: mocks.noteMacStaleOpenClawUpdateLaunchdJobs,
+  maybeRepairMacGatewayServiceEnvQuotes: mocks.maybeRepairMacGatewayServiceEnvQuotes,
 }));
 
 vi.mock("../commands/doctor-foreign-launchd-jobs.js", () => ({
