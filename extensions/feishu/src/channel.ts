@@ -1041,7 +1041,7 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
       id: "feishu",
       meta,
       capabilities: {
-        chatTypes: ["direct", "channel"],
+        chatTypes: ["direct", "group"],
         polls: false,
         threads: true,
         media: true,
