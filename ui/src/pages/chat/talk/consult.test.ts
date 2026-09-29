@@ -502,7 +502,8 @@ describe("RealtimeTalkSession consult handoff", () => {
 
     const waitCalls = request.mock.calls.filter((call) => call[0] === "agent.wait");
     expect(waitCalls.length).toBeGreaterThanOrEqual(1);
-    expect((waitCalls[0]![1] as unknown as { runId?: string }).runId).toBe("run-1");
+    const waitCall = waitCalls[0] as unknown as [string, { runId?: string }];
+    expect(waitCall[1].runId).toBe("run-1");
     expect(submit).toHaveBeenCalledTimes(1);
     expect(submit).toHaveBeenCalledWith("call-1", {
       result: "The source reply still wins.",
