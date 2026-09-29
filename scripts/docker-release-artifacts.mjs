@@ -546,10 +546,24 @@ function verifyDockerProducerRun(runInfo, manifest, runAttempt) {
 }
 
 /** Preparation belongs to its exact successful seal job. A publisher retry
- * advances the parent attempt without rebuilding that immutable payload. */
-export function verifyDockerReleaseProducer(
+ * advances the parent attempt without rebuilding that immutable payload.
+ * @param {ReturnType<typeof validateDockerReleaseManifest>} manifest
+ * @param {{publisherSha: string, publisherRunId?: string, publisherRunAttempt?: string,
+ *   readApi?: typeof ghJson, fullReleaseManifest?: import("./validate-full-release-validation-evidence.mjs").FullReleaseValidationManifest,
+ *   evidenceClient?: ReturnType<typeof import("./release-ci-summary.mjs").createReleaseEvidenceClient>,
+ *   publisherFullRef?: string}} options
+ */
+export async function verifyDockerReleaseProducer(
   manifest,
-  { publisherSha, publisherRunId = "", publisherRunAttempt = "", readApi = ghJson },
+  {
+    publisherSha,
+    publisherRunId = "",
+    publisherRunAttempt = "",
+    readApi = ghJson,
+    fullReleaseManifest,
+    evidenceClient,
+    publisherFullRef = "refs/heads/main",
+  },
 ) {
   const { repository, toolingSha, producer } = manifest;
   requireValue(SHA.test(publisherSha), "Invalid Docker publisher tooling SHA.");
@@ -610,12 +624,38 @@ export function verifyDockerReleaseProducer(
       sealJob.head_sha === toolingSha,
     "Exact Docker preparation job has not completed successfully.",
   );
-  for (const target of new Set(["main", publisherSha])) {
-    const comparison = readApi(`repos/${repository}/compare/${toolingSha}...${target}`);
+  if (fullReleaseManifest?.sourceAdmission?.qualificationAdmission) {
+    const { authenticateCandidateOwnedArtifact } =
+      await import("./validate-full-release-validation-evidence.mjs");
+    await authenticateCandidateOwnedArtifact({
+      manifest: fullReleaseManifest,
+      repository,
+      candidateSha: manifest.sourceSha,
+      qualificationSha: toolingSha,
+      publisherSha,
+      publisherFullRef,
+      client: evidenceClient,
+    });
+    const selected = preparedDockerEvidenceFromFullRelease({
+      manifest: fullReleaseManifest,
+      sourceSha: manifest.sourceSha,
+      runId: fullReleaseManifest.runId,
+      runAttempt: fullReleaseManifest.runAttempt,
+    });
     requireValue(
-      comparison.status === "ahead" || comparison.status === "identical",
-      `Docker producer tooling is not on ${target} ancestry.`,
+      selected.preparedRunId === producer.runId &&
+        selected.preparedRunAttempt === producer.runAttempt &&
+        selected.preparedManifestSha256 === sha256(JSON.stringify(manifest, null, 2) + "\n"),
+      "Docker producer bytes differ from the authenticated frozen qualification.",
     );
+  } else {
+    for (const target of new Set(["main", publisherSha])) {
+      const comparison = readApi(`repos/${repository}/compare/${toolingSha}...${target}`);
+      requireValue(
+        comparison.status === "ahead" || comparison.status === "identical",
+        `Docker producer tooling is not on ${target} ancestry.`,
+      );
+    }
   }
   for (const entry of manifest.architectures) {
     const artifact = artifactByName(repository, producer.runId, entry.artifact.name, readApi);
@@ -630,7 +670,7 @@ export function verifyDockerReleaseProducer(
   return manifest;
 }
 
-function loadPreparedManifest(values, env) {
+async function loadPreparedManifest(values, env) {
   const bytes = readFileSync(values.manifest);
   requireValue(
     /^[a-f0-9]{64}$/u.test(values["manifest-sha256"]) &&
@@ -651,6 +691,10 @@ function loadPreparedManifest(values, env) {
     publisherSha: env.GITHUB_WORKFLOW_SHA,
     publisherRunId: env.GITHUB_RUN_ID,
     publisherRunAttempt: env.GITHUB_RUN_ATTEMPT,
+    publisherFullRef: env.GITHUB_REF,
+    fullReleaseManifest: values["full-release-manifest"]
+      ? readJson(values["full-release-manifest"])
+      : undefined,
   });
 }
 
@@ -819,6 +863,7 @@ async function main() {
         "output",
         "manifest",
         "manifest-sha256",
+        "full-release-manifest",
         "artifact-name",
         "run-id",
         "run-attempt",
@@ -837,7 +882,7 @@ async function main() {
     writeJson(values.output, manifest);
     appendFileSync(env.GITHUB_OUTPUT, `manifest_sha256=${sha256(readFileSync(values.output))}\n`);
   } else if (command === "verify" || command === "publish") {
-    const manifest = loadPreparedManifest(values, env);
+    const manifest = await loadPreparedManifest(values, env);
     if (command === "verify") {
       appendFileSync(
         env.GITHUB_OUTPUT,

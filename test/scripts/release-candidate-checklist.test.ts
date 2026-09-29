@@ -23,9 +23,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
 import {
   normalizePublicationIntent,
-  publicationAdmissionContract,
   publicationIntentInputs,
-  publicationSourceContract,
 } from "../../scripts/full-release-publication-contract.mjs";
 import { parsePluginReleaseSelection } from "../../scripts/lib/plugin-npm-release.ts";
 import { splitChangelog } from "../../scripts/lib/release-changelog.mjs";
@@ -45,7 +43,6 @@ import {
   candidateCumulativeShippedPullRequests,
   candidateParallelsArgs,
   candidateParallelsShellCommand,
-  fullReleaseTrustedWorkflowFields,
   githubApi,
   isDirectReleaseCandidateExecution,
   loadCandidateShippedBaseline,
@@ -240,8 +237,16 @@ describe("release candidate checklist", () => {
     preflightFailure?: boolean;
     workflowSha?: string;
     savedToolingTag?: string;
+    retainedHelperRequest?: boolean;
   }>([
     { tag: "v2026.9.1", pin: "2026.9.1", expected: "passed", failedRegistry: "" },
+    {
+      tag: "v2026.9.1",
+      pin: "2026.9.1",
+      expected: "passed",
+      launch: "npm-only",
+      retainedHelperRequest: true,
+    },
     {
       tag: "v2026.9.1",
       pin: "2026.9.1",
@@ -353,6 +358,7 @@ describe("release candidate checklist", () => {
       preflightFailure = false,
       workflowSha,
       savedToolingTag,
+      retainedHelperRequest,
     }) => {
       const { root: targetRoot, git } = candidateGitFixture({
         "package.json": JSON.stringify({ version: tag.slice(1) }),
@@ -390,8 +396,16 @@ describe("release candidate checklist", () => {
       options.outputDir = join(targetRoot, "evidence");
       mkdirSync(join(options.outputDir, "npm-preflight"), { recursive: true });
       writeFileSync(join(options.outputDir, "npm-preflight", "openclaw.tgz"), "fixture");
+      if (retainedHelperRequest) {
+        writeFileSync(
+          join(options.outputDir, "frv-request.json"),
+          JSON.stringify({ phase: "attempted" }),
+        );
+      }
       const source = readFileSync("scripts/release-candidate-checklist.mts", "utf8");
       const main = source.match(/^async function main\(\)[\s\S]*?^\}/mu)?.[0];
+      const helperDispatch =
+        source.match(/^function dispatchFullReleaseUsingHelper\([\s\S]*?^\}/mu)?.[0] ?? "";
       const android =
         source.match(/^function checkCandidateAndroidVersion\([\s\S]*?^\}/mu)?.[0] ?? "";
       const selectPublication =
@@ -500,13 +514,15 @@ describe("release candidate checklist", () => {
         };
       });
       // Run the real coordinator and evidence writers; unrelated remote release gates are fixtures.
-      const dispatches: Record<string, string>[] = [];
+      const dispatches: string[][] = [];
       const completion = runInNewContext(
         stripNodeTypeScriptTypes(
-          `${android}\n${selectPublication}\n${savedTagReader}\n${main}\nmain();`,
+          `${android}\n${selectPublication}\n${savedTagReader}\n${helperDispatch}\n${main}\nmain();`,
         ),
         {
-          process: { argv: [], cwd: () => targetRoot, env: {} },
+          process: { argv: [], cwd: () => targetRoot, env: {}, execPath: process.execPath },
+          DEFAULT_REPO: "openclaw/openclaw",
+          resolvePath: (...paths: string[]) => join(...paths),
           console: { log, warn: log },
           TOOLING_ROOT: "/trusted/tooling",
           PUBLISH_TOOLING_TAG_PATTERN: /^release-publish\/[a-f0-9]{12}-[1-9][0-9]*$/u,
@@ -532,14 +548,24 @@ describe("release candidate checklist", () => {
           reconcileReleaseCandidateState,
           writeReleaseCandidateState: writeState,
           updateReleaseCandidateState: updateState,
-          run: (command: string, args: string[]) =>
-            args[0] === "fetch" ? "" : run(command, args, { cwd: targetRoot, capture: true }),
+          run: (command: string, args: string[]) => {
+            if (args[0]?.endsWith("full-release-validation-at-sha.mjs")) {
+              dispatches.push(args);
+              stages.push("dispatch");
+              writeFileSync(
+                join(options.outputDir, "frv-request.json"),
+                JSON.stringify({ phase: "observed", run: { id: 111, attempt: 1 } }),
+              );
+              return "";
+            }
+            return args[0] === "fetch"
+              ? ""
+              : run(command, args, { cwd: targetRoot, capture: true });
+          },
           parseReleaseVersion,
           classifyReleaseTrain,
           normalizePublicationIntent,
           publicationIntentInputs,
-          publicationSourceContract,
-          publicationAdmissionContract,
           parsePluginReleaseSelection,
           isRecord,
           requireString: (value: string) => value,
@@ -549,18 +575,7 @@ describe("release candidate checklist", () => {
           validateCandidateChangelogProvenance: () => ({ status: "passed", shippedBaselines: [] }),
           runLocalGeneratedCheckIfNeeded: generatedChecks,
           releaseBranchForTag,
-          fullReleaseTrustedWorkflowFields,
           readFileSync: () => readFileSync(".github/workflows/full-release-validation.yml", "utf8"),
-          dispatchWorkflow: (
-            _repo: string,
-            _workflow: string,
-            _ref: string,
-            fields: Record<string, string>,
-          ) => {
-            dispatches.push(fields);
-            stages.push("dispatch");
-            return "111";
-          },
           waitForSuccessfulRun: async (_repo: string, runId: string) => {
             stages.push("wait");
             waitedRuns.push(runId);
@@ -571,7 +586,7 @@ describe("release candidate checklist", () => {
           },
           downloadArtifact: () => {},
           readJson: (file: string) =>
-            file === statePath
+            file === statePath || file.endsWith("frv-request.json")
               ? JSON.parse(readFileSync(file, "utf8"))
               : file.endsWith("preflight-manifest.json")
                 ? npmManifest
@@ -690,19 +705,43 @@ describe("release candidate checklist", () => {
       if (launch === "npm-only") {
         expect(dispatches).toHaveLength(1);
         const dispatched = expectDefined(dispatches[0], "FRV dispatch");
-        expect(dispatched).not.toHaveProperty("validation_purpose");
-        expect(dispatched).not.toHaveProperty("publication_selection_json");
-        expect(
-          JSON.parse(expectDefined(dispatched.trusted_workflow_json, "dispatch envelope")),
-        ).toMatchObject({
-          validationPurpose: "publish",
-          publicationSelection: {
-            route: publicationRoute,
-            npmDistTag: options.npmDistTag,
-            publishOpenclawNpm: true,
-            pluginPublishScope: "all-publishable",
-            plugins: [],
-          },
+        expect(dispatched[dispatched.indexOf("--target-ref") + 1]).toBe(
+          "release/" + tag.slice(1).split("-beta.")[0],
+        );
+        expect(dispatched).toEqual(
+          expect.arrayContaining([
+            "--sha",
+            targetSha,
+            ...(!retainedHelperRequest
+              ? [
+                  "--workflow-sha",
+                  targetSha,
+                  "--trusted-workflow-ref",
+                  "candidate",
+                  "--admission-workflow-sha",
+                  toolingSha,
+                  "--admission-workflow-ref",
+                  options.publishWorkflowRef || options.workflowRef,
+                ]
+              : []),
+            "--request-file",
+            join(options.outputDir, "frv-request.json"),
+            "validation_purpose=publish",
+          ]),
+        );
+        if (retainedHelperRequest) {
+          expect(dispatched).not.toContain("--workflow-sha");
+          expect(dispatched).not.toContain("--trusted-workflow-ref");
+          expect(dispatched).not.toContain("--admission-workflow-sha");
+          expect(dispatched).not.toContain("--resume-request");
+        }
+        const selection = dispatched.find((arg) => arg.startsWith("publication_selection_json="));
+        expect(JSON.parse(selection!.slice("publication_selection_json=".length))).toMatchObject({
+          route: publicationRoute,
+          npmDistTag: options.npmDistTag,
+          publishOpenclawNpm: true,
+          pluginPublishScope: "all-publishable",
+          plugins: [],
         });
         const evidence = JSON.parse(
           readFileSync(join(options.outputDir, "release-candidate-evidence.json"), "utf8"),
@@ -1284,7 +1323,9 @@ describe("release candidate checklist", () => {
     const validationIndex = source.indexOf(
       "const releaseNotesCheck = validateCandidateReleaseNotes",
     );
-    const fullMatrixDispatchIndex = source.indexOf("options.fullReleaseRunId = dispatchWorkflow(");
+    const fullMatrixDispatchIndex = source.indexOf(
+      "options.fullReleaseRunId = dispatchFullReleaseUsingHelper(",
+    );
 
     expect(check).toMatchObject({ status: "passed", mode: "compact" });
     expect(validationIndex).toBeGreaterThanOrEqual(0);
@@ -2026,9 +2067,6 @@ describe("release candidate checklist", () => {
     expect(releaseBranchForTag("v2026.7.1")).toBe("release/2026.7.1");
     expect(releaseBranchForTag("v2026.7.1-1")).toBe("release/2026.7.1-1");
     expect(releaseBranchForTag("v2026.7.1-alpha.4")).toBe("");
-
-    const source = readFileSync("scripts/release-candidate-checklist.mts", "utf8");
-    expect(source).toContain("target_context_ref: targetContextRef");
   });
 
   it.each([
@@ -2598,59 +2636,6 @@ describe("release candidate checklist", () => {
         "full-release-validation.yml",
       ),
     ).toThrow("refusing to guess from recent workflow_dispatch runs");
-  });
-
-  it("keeps contract 1 callers compatible and sends identity for contract 2", () => {
-    const workflowSha = "a".repeat(40);
-    const source = (contract: string, declareIdentity: boolean) => `env:
-  RELEASE_ISOLATION_TOOLING_CONTRACT: "${contract}"
-on:
-  workflow_dispatch:
-    inputs:
-      expected_sha: {}
-${declareIdentity ? "      trusted_workflow_json: {}\n" : ""}`;
-
-    expect(
-      fullReleaseTrustedWorkflowFields({
-        workflowRef: "main",
-        workflowSha,
-        workflowSource: source("1", false),
-      }),
-    ).toEqual({});
-    const fields = fullReleaseTrustedWorkflowFields({
-      workflowRef: "main",
-      workflowSha,
-      workflowSource: source("2", true),
-    });
-    expect(JSON.parse(fields.trusted_workflow_json ?? "{}")).toEqual({
-      ref: "main",
-      fullRef: "refs/heads/main",
-      sha: workflowSha,
-    });
-    expect(() =>
-      fullReleaseTrustedWorkflowFields({
-        workflowRef: "main",
-        workflowSha,
-        workflowSource: source("2", false),
-      }),
-    ).toThrow("contract 2 requires trusted_workflow_json");
-    for (const contract of ["3", "4"]) {
-      expect(() =>
-        fullReleaseTrustedWorkflowFields({
-          workflowRef: "main",
-          workflowSha,
-          workflowSource: source(contract, true),
-        }),
-      ).toThrow("supported release tooling contract");
-    }
-  });
-
-  it("threads the selected tooling identity into direct full validation dispatch", () => {
-    const source = readFileSync("scripts/release-candidate-checklist.mts", "utf8");
-
-    expect(source).toContain("const trustedWorkflowFields = fullReleaseTrustedWorkflowFields({");
-    expect(source).toContain("workflowSha: toolingSha");
-    expect(source).toContain("...trustedWorkflowFields");
   });
 
   it("falls back to a single compatible artifact from the same run", () => {

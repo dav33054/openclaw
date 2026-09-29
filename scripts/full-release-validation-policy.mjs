@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import {
   validateFullReleaseCandidateBinding,
   validateFullReleaseCandidateRequest,
@@ -7,150 +8,23 @@ import {
 import {
   FULL_RELEASE_PUBLICATION_ADMISSION_CONTRACT,
   FULL_RELEASE_SOURCE_ADMISSION_CONTRACT,
-  publicationIntentInputs,
   validatePublicationAdmissionBinding,
   validatePublicationSourceBinding,
 } from "./full-release-publication-contract.mjs";
+import { compareAscii } from "./lib/canonical-json.mjs";
 import { hasRequiredCrossOsSuites } from "./lib/cross-os-release-checks/suite-filter.mjs";
 import { candidateArtifactJsonFromBinding } from "./lib/full-release-candidate-reuse.mjs";
 import {
   MAX_RELEASE_ARTIFACT_BYTES,
   serializeReleaseArtifact,
 } from "./lib/full-release-evidence.mjs";
+import { buildReleaseValidationManifest } from "./lib/full-release-manifest.mjs";
 import { changelogEntryPath, isReleaseChangelogPath } from "./lib/release-changelog.mjs";
+import { validateQualificationBaselines } from "./lib/release-upgrade-baseline.mjs";
 import { classifyReleaseTrain, parseReleaseVersion } from "./lib/release-version.mjs";
+import { validateQualificationCoverage } from "./release-qualification-coverage.mjs";
 
-export { MAX_RELEASE_ARTIFACT_BYTES, serializeReleaseArtifact };
-
-export function buildReleaseValidationManifest({ plan, drain, context }) {
-  const childEvidence = Object.fromEntries(
-    Object.entries(drain?.children ?? {}).map(([key, child]) => [
-      key,
-      {
-        runId: child.runId,
-        plannedRunAttempt: child.plannedRunAttempt,
-        effectiveRunAttempt: child.runAttempt,
-        observedRunAttempts: child.observedRunAttempts,
-        compositeJobsSha256: child.compositeJobsSha256,
-        dispatchActor: child.dispatchActor,
-        triggeringActor: child.triggeringActor,
-        repository: child.repository,
-        jobs: child.timing.jobs.map(
-          ({ name, status, conclusion, acceptedRunAttempt, startedAt, completedAt, url }) => ({
-            name,
-            status,
-            conclusion,
-            acceptedRunAttempt,
-            startedAt,
-            completedAt,
-            url,
-          }),
-        ),
-      },
-    ]),
-  );
-  const current = {
-    version: 4,
-    runId: context.runId,
-    runAttempt: context.runAttempt,
-    workflowRef: context.workflowRef,
-    workflowSha: context.workflowSha,
-    workflowFullRef: context.workflowFullRef,
-    workflowRefType: context.workflowRefType,
-    targetRef: context.targetRef,
-    targetSha: plan.targetSha,
-    candidateBinding: plan.candidate,
-    publicationArtifacts: context.publicationArtifacts ?? { npmPreflight: null, docker: null },
-    publishInputs: context.publishInputs,
-    childEvidence,
-    executionPlanSha256: plan.sha256,
-    sourceParentRunAttempt: Number(plan.parentRunAttempt),
-    ...(plan.sourceAdmissionContract
-      ? {
-          sourceAdmissionContract: plan.sourceAdmissionContract,
-          sourceAdmission: plan.sourceAdmission,
-          trustedWorkflow: plan.trustedWorkflow,
-        }
-      : {}),
-    ...(plan.publicationAdmissionContract
-      ? {
-          publicationAdmissionContract: plan.publicationAdmissionContract,
-          publicationAdmission: plan.publicationAdmission,
-        }
-      : {}),
-  };
-  const runs = Object.fromEntries(plan.children.map((child) => [child.key, child.runId]));
-  const root = plan.evidenceReuse.sourceManifest;
-  let rootPublication;
-  if (plan.evidenceReuse.requested && root?.publicationAdmissionContract !== undefined) {
-    rootPublication = {
-      sourceAdmissionContract: root.sourceAdmissionContract,
-      sourceAdmission: root.sourceAdmission,
-      publicationAdmissionContract: root.publicationAdmissionContract,
-      publicationAdmission: root.publicationAdmission,
-    };
-    validatePublicationAdmissionBinding(rootPublication);
-    if (
-      root.sourceAdmission.runId !== plan.evidenceReuse.rootRunId ||
-      root.sourceAdmission.candidateSha !== plan.evidenceReuse.evidenceSha
-    ) {
-      throw new Error("reused publication admission differs from the retained root identity");
-    }
-  }
-  const manifest = plan.evidenceReuse.requested
-    ? {
-        ...plan.evidenceReuse.sourceManifest,
-        ...current,
-        evidenceReuse: {
-          policy: plan.evidenceReuse.policy,
-          runId: plan.evidenceReuse.rootRunId,
-          selectedRunId: plan.evidenceReuse.selectedRunId,
-          evidenceSha: plan.evidenceReuse.evidenceSha,
-          changedPaths: plan.evidenceReuse.changedPaths ?? [],
-          ...(rootPublication ? { publication: rootPublication } : {}),
-        },
-        controls: {
-          ...plan.evidenceReuse.sourceManifest.controls,
-          performanceReportPublication: "artifact-only",
-        },
-      }
-    : {
-        ...current,
-        workflowName: "Full Release Validation",
-        releaseProfile: context.releaseProfile,
-        rerunGroup: context.rerunGroup,
-        runReleaseSoak: context.runReleaseSoak,
-        validationInputs: {
-          ...context.validationInputs,
-          ...(plan.sourceAdmissionContract
-            ? {
-                ...publicationIntentInputs(plan.sourceAdmission),
-              }
-            : {}),
-          ...(plan.coveragePolicy ? { coveragePolicy: plan.coveragePolicy } : {}),
-        },
-        controls: {
-          stableSoakRequired: ["stable", "full"].includes(context.releaseProfile),
-          performanceBlocking: context.releaseProfile !== "beta",
-          performanceReportPublication: "artifact-only",
-        },
-        childRuns: {
-          normalCi: runs.normalCi ?? "",
-          pluginPrereleaseIndependent: runs.pluginPrereleaseIndependent ?? "",
-          pluginPrereleaseCandidate: runs.pluginPrereleaseCandidate ?? "",
-          releaseChecksIndependent: runs.releaseChecksIndependent ?? "",
-          releaseChecksCandidate: runs.releaseChecksCandidate ?? "",
-          npmTelegram: runs.npmTelegram ?? "",
-          productPerformance: {
-            runId: runs.productPerformance ?? "",
-            conclusion: drain?.children?.productPerformance?.conclusion ?? "",
-            blocking: context.releaseProfile !== "beta",
-          },
-        },
-      };
-  serializeReleaseArtifact(manifest);
-  return manifest;
-}
+export { MAX_RELEASE_ARTIFACT_BYTES, serializeReleaseArtifact, buildReleaseValidationManifest };
 
 const SUCCESSFUL_JOB_CONCLUSIONS = new Set(["neutral", "skipped", "success"]);
 const MAX_REPORTED_ISSUES = 25;
@@ -564,12 +438,14 @@ export function normalizeReleaseCoveragePolicy({
 }
 
 export function validateReleaseCoveragePolicyBinding(plan, validationInputs = {}) {
-  const coveragePolicy = normalizeReleaseCoveragePolicy({
-    ...validationInputs,
-    releaseProfile: plan?.releaseProfile,
-    rerunGroup: plan?.rerunGroup,
-    runReleaseSoak: plan?.candidateRequest?.releaseSoak,
-  });
+  const coveragePolicy = plan?.qualificationCoverage
+    ? validationInputs.coveragePolicy
+    : normalizeReleaseCoveragePolicy({
+        ...validationInputs,
+        releaseProfile: plan?.releaseProfile,
+        rerunGroup: plan?.rerunGroup,
+        runReleaseSoak: plan?.candidateRequest?.releaseSoak,
+      });
   if (
     coveragePolicy !== plan?.coveragePolicy ||
     (coveragePolicy && validationInputs.targetVersion !== plan?.targetVersion)
@@ -936,10 +812,12 @@ function executionPlanChildRequired(spec, rerunGroup) {
 
 export function buildReleaseExecutionPlan(input) {
   const telegramWaiver = normalizeReleaseTelegramWaiver(input);
-  normalizeReleaseCoveragePolicy({
-    ...input,
-    runReleaseSoak: input.runReleaseSoak ?? input.candidateRequestInput?.releaseSoak,
-  });
+  if (!input.qualificationCoverage) {
+    normalizeReleaseCoveragePolicy({
+      ...input,
+      runReleaseSoak: input.runReleaseSoak ?? input.candidateRequestInput?.releaseSoak,
+    });
+  }
   const parentRunId = stringValue(input.parentRunId).trim();
   const parentRunAttempt = positiveInteger(input.parentRunAttempt);
   const rerunGroup = stringValue(input.rerunGroup).trim();
@@ -959,10 +837,20 @@ export function buildReleaseExecutionPlan(input) {
       stringValue(input.releasePackageSpec).trim(),
     );
   const phasedChildren = Number(input.childPhaseVersion) === 3;
-  const childSpecs = phasedChildren ? CHILD_SPECS : UNPHASED_CHILD_SPECS;
+  const frozenCoverage =
+    input.qualificationCoverage === undefined
+      ? undefined
+      : validateQualificationCoverage(input.qualificationCoverage);
+  const childSpecs = frozenCoverage
+    ? frozenCoverage.children.map((child) => ({ ...child, displayName: child.name }))
+    : phasedChildren
+      ? CHILD_SPECS
+      : UNPHASED_CHILD_SPECS;
   const children = childSpecs.map((spec) => {
     const raw = childInputs[spec.key] ?? {};
-    const required = releaseExecutionChildRequired(spec, input, npmTelegramForAll);
+    const required = frozenCoverage
+      ? true
+      : releaseExecutionChildRequired(spec, input, npmTelegramForAll);
     const dispatchId = `full-release-validation-${parentRunId}-${parentRunAttempt}${spec.suffix}`;
     return {
       dispatchName: spec.dispatchName,
@@ -1104,6 +992,9 @@ function releaseExecutionPlanShape(payload) {
       ...basePlanKeys,
       ...(Object.hasOwn(payload, "knownFlakyJobs") ? ["knownFlakyJobs"] : []),
       ...(Object.hasOwn(payload, "childReuse") ? ["childReuse"] : []),
+      ...(Object.hasOwn(payload, "qualificationCoverage")
+        ? ["qualificationCoverage", "qualificationInputs"]
+        : []),
       ...(Object.hasOwn(payload, "telegramWaiver") ? ["targetVersion", "telegramWaiver"] : []),
       ...(Object.hasOwn(payload, "coveragePolicy") ? ["targetVersion", "coveragePolicy"] : []),
       ...(Object.hasOwn(payload, "sourceAdmissionContract")
@@ -1176,6 +1067,12 @@ function executionPlanDigestPayload(plan) {
     ...publication,
     ...waiver,
     ...coverage,
+    ...(plan.qualificationCoverage
+      ? {
+          qualificationCoverage: plan.qualificationCoverage,
+          qualificationInputs: plan.qualificationInputs,
+        }
+      : {}),
     ...(plan.childReuse !== undefined ? { childReuse: plan.childReuse } : {}),
     ...(Object.hasOwn(plan, "knownFlakyJobs") ? { knownFlakyJobs: plan.knownFlakyJobs } : {}),
     attemptEvidenceVersion: plan.attemptEvidenceVersion,
@@ -1221,6 +1118,8 @@ export function buildReleaseExecutionPlanArtifact({
   sourceAdmission,
   publicationAdmissionContract,
   publicationAdmission,
+  qualificationCoverage,
+  qualificationInputs,
   targetVersion,
   telegramWaiver,
   trustedWorkflow,
@@ -1242,14 +1141,27 @@ export function buildReleaseExecutionPlanArtifact({
   if (!validEvidenceReuseIdentity(normalizedReuse)) {
     throw new Error("release execution plan evidence reuse binding is invalid");
   }
+  const frozenCoverage =
+    qualificationCoverage === undefined
+      ? undefined
+      : validateQualificationCoverage(qualificationCoverage);
   const normalizedChildren = children.map((child) => {
-    const spec = releaseChildSpec(child.key);
+    const spec = frozenCoverage
+      ? frozenCoverage.children.find((entry) => entry.key === child.key)
+      : releaseChildSpec(child.key);
+    if (!spec) {
+      throw new Error("Execution plan contains a child outside frozen qualification coverage");
+    }
     return normalizedPlanChild(
       { ...child, dispatchName: spec.dispatchName },
       { sourceParentAttempt: attemptAware },
     );
   });
-  const artifactSpecs = normalizedAttemptEvidenceVersion === 3 ? CHILD_SPECS : UNPHASED_CHILD_SPECS;
+  const artifactSpecs = frozenCoverage
+    ? []
+    : normalizedAttemptEvidenceVersion === 3
+      ? CHILD_SPECS
+      : UNPHASED_CHILD_SPECS;
   for (const spec of artifactSpecs) {
     if (
       !normalizedChildren.some((child) => child.key === spec.key) &&
@@ -1267,6 +1179,7 @@ export function buildReleaseExecutionPlanArtifact({
     }
   }
   const basePlan = {
+    ...(frozenCoverage ? { qualificationCoverage: frozenCoverage, qualificationInputs } : {}),
     ...(sourceAdmissionContract !== undefined ? { sourceAdmissionContract, sourceAdmission } : {}),
     ...(publicationAdmissionContract !== undefined
       ? { publicationAdmissionContract, publicationAdmission }
@@ -1359,14 +1272,33 @@ function validatePlanSourceAdmission(plan, expected) {
 
 function validateCandidatePlanBinding(plan, expectedCandidateRequest) {
   const request = validateRecordedFullReleaseCandidateRequest(plan.candidateRequest);
+  if (plan.qualificationCoverage) {
+    const baselines = validateQualificationBaselines(
+      JSON.parse(plan.sourceAdmission.coverage.qualification_baselines_json),
+      {
+        candidateVersion: plan.candidate?.package.version ?? plan.targetVersion,
+        targetContextRef: plan.sourceAdmission.targetContextRef,
+      },
+    );
+    if (
+      !isDeepStrictEqual(
+        request.upgradeSurvivorBaselines,
+        baselines.upgradeSurvivorBaselines.toSorted(compareAscii),
+      )
+    ) {
+      throw new Error("Candidate package request changed the admitted frozen baselines");
+    }
+  }
   if (plan.coveragePolicy !== undefined && plan.attemptEvidenceVersion !== 3) {
     throw new Error("release coverage policy requires a phase-three execution plan");
   }
-  normalizeReleaseCoveragePolicy({
-    ...plan,
-    runReleaseSoak: request.releaseSoak,
-    candidateVersion: plan.candidate?.package.version,
-  });
+  if (!plan.qualificationCoverage) {
+    normalizeReleaseCoveragePolicy({
+      ...plan,
+      runReleaseSoak: request.releaseSoak,
+      candidateVersion: plan.candidate?.package.version,
+    });
+  }
   if (
     request.repository !== plan.repository ||
     request.targetSha !== plan.targetSha ||
@@ -1452,7 +1384,7 @@ export function validateReleaseExecutionPlanArtifact(payload, expected = {}) {
   const children = validatePlan(payload.children, {
     sourceParentAttempt: shape !== "historical",
   });
-  validateExecutionPlanChildBindings(children, payload);
+  validateExecutionPlanChildBindings(children, payload, expected.qualificationCoverage);
   validateChildReuseBindings(payload);
   const plan = {
     ...payload,
@@ -1798,7 +1730,71 @@ function validatePlan(value, options = {}) {
   });
 }
 
-function validateExecutionPlanChildBindings(children, payload) {
+function validateExecutionPlanChildBindings(children, payload, expectedCoverage) {
+  if (payload.qualificationCoverage !== undefined) {
+    const coverage = validateQualificationCoverage(payload.qualificationCoverage);
+    if (
+      expectedCoverage !== undefined &&
+      !isDeepStrictEqual(coverage, validateQualificationCoverage(expectedCoverage))
+    ) {
+      throw new Error("Execution plan differs from independently admitted qualification coverage");
+    }
+    if (
+      payload.attemptEvidenceVersion !== 3 ||
+      payload.targetSha !== payload.workflowSha ||
+      payload.releaseProfile !== coverage.profile ||
+      payload.rerunGroup !== "all" ||
+      !payload.sourceAdmission?.qualificationAdmission ||
+      !payload.qualificationInputs ||
+      typeof payload.qualificationInputs !== "object" ||
+      Array.isArray(payload.qualificationInputs) ||
+      !isDeepStrictEqual(
+        children.map((child) => child.key).toSorted(compareAscii),
+        coverage.children.map((child) => child.key).toSorted(compareAscii),
+      )
+    ) {
+      throw new Error("Invalid frozen qualification execution plan binding");
+    }
+    const reusedRoot = payload.evidenceReuse?.requested
+      ? payload.evidenceReuse.sourceManifest
+      : undefined;
+    if (
+      reusedRoot?.qualificationCoverage &&
+      !isDeepStrictEqual(reusedRoot.qualificationCoverage, coverage)
+    ) {
+      throw new Error("Reused root qualification coverage differs from the admitted candidate");
+    }
+    for (const spec of coverage.children) {
+      const child = children.find((entry) => entry.key === spec.key);
+      // Reuse retains the original producer; strict chain validation separately
+      // authenticates that root and proves the complete changelog-only delta.
+      const producer = child.source === "reused" && reusedRoot?.workflowSha ? reusedRoot : payload;
+      if (
+        !child.required ||
+        !child.selected ||
+        child.dispatchName !== spec.dispatchName ||
+        child.workflow !== spec.workflow ||
+        child.workflowSha !== producer.workflowSha ||
+        (child.source === "fresh" && child.workflowRef !== producer.workflowRef) ||
+        (child.source === "fresh" &&
+          child.displayTitle !==
+            spec.name +
+              " full-release-validation-" +
+              payload.parentRunId +
+              "-" +
+              payload.parentRunAttempt +
+              spec.suffix)
+      ) {
+        throw new Error(
+          "Frozen qualification child identity or required coverage changed: " + spec.key,
+        );
+      }
+    }
+    return;
+  }
+  if (expectedCoverage !== undefined || payload.qualificationInputs !== undefined) {
+    throw new Error("Execution plan omitted admitted frozen qualification coverage");
+  }
   const expectedKeys = (payload.attemptEvidenceVersion === 3 ? CHILD_SPECS : UNPHASED_CHILD_SPECS)
     .map((spec) => spec.key)
     .toSorted();

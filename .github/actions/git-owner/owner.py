@@ -463,7 +463,7 @@ def checkout_harness(sha):
     node_setup_scripts = ("scripts/lib/pnpm-lockfile-documents.mjs",)
     evidence_scripts = ("scripts/ios-screenshot-evidence.mjs", "scripts/lib/direct-run.mjs", "scripts/ci-static-step.sh")
     platform_scripts = ("scripts/lib/swift-toolchain.sh",)
-    upgrade_scripts = ("scripts/lib/release-upgrade-baseline.mjs", "scripts/lib/release-version.mjs")
+    upgrade_scripts = ("scripts/lib/release-upgrade-baseline.mjs", "scripts/lib/release-version.mjs", "scripts/lib/canonical-json.mjs")
     npm_lock_scripts = (
         "scripts/ci-npm-lock-admission.mjs",
         "scripts/generate-npm-package-lock.mjs",

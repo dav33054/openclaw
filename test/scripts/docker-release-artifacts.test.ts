@@ -262,7 +262,7 @@ describe("prepared Docker publication", () => {
       const fixture = await createPreparedRelease();
       fixture.run.path = `.github/workflows/${workflow}.yml`;
       fixture.manifest.producer.workflowRef = `${repository}/${fixture.run.path}@refs/heads/main`;
-      const manifest = verifyDockerReleaseProducer(fixture.manifest, {
+      const manifest = await verifyDockerReleaseProducer(fixture.manifest, {
         publisherSha: toolingSha,
         readApi: fixture.readApi,
       });
@@ -278,7 +278,7 @@ describe("prepared Docker publication", () => {
       fixture.run.status = "completed";
       fixture.run.conclusion = "success";
       expect(
-        verifyDockerReleaseProducer(manifest, {
+        await verifyDockerReleaseProducer(manifest, {
           publisherSha: toolingSha,
           readApi: fixture.readApi,
         }),
@@ -290,7 +290,7 @@ describe("prepared Docker publication", () => {
     "reuses its successful preparation when retrying a %s publication attempt",
     async (conclusion) => {
       const fixture = await createPublicationRetry(conclusion);
-      expect(verifyDockerReleaseProducer(fixture.manifest, fixture.publisher)).toBe(
+      expect(await verifyDockerReleaseProducer(fixture.manifest, fixture.publisher)).toBe(
         fixture.manifest,
       );
     },
@@ -340,13 +340,17 @@ describe("prepared Docker publication", () => {
     if (failure === "replaced artifact") {
       fixture.artifacts[0]!.id += 100;
     }
-    expect(() => verifyDockerReleaseProducer(fixture.manifest, fixture.publisher)).toThrow();
+    await expect(
+      verifyDockerReleaseProducer(fixture.manifest, fixture.publisher),
+    ).rejects.toThrow();
   });
 
   it("retains successful historical preparation for an unrelated publisher", async () => {
     const fixture = await createPublicationRetry("success");
     fixture.publisher.publisherRunId = "200";
-    expect(verifyDockerReleaseProducer(fixture.manifest, fixture.publisher)).toBe(fixture.manifest);
+    expect(await verifyDockerReleaseProducer(fixture.manifest, fixture.publisher)).toBe(
+      fixture.manifest,
+    );
   });
 
   it.each([
@@ -377,12 +381,12 @@ describe("prepared Docker publication", () => {
     if (failure === "wrong workflow") {
       fixture.run.path = ".github/workflows/ci.yml";
     }
-    expect(() =>
+    await expect(
       verifyDockerReleaseProducer(fixture.manifest, {
         publisherSha: toolingSha,
         readApi: fixture.readApi,
       }),
-    ).toThrow();
+    ).rejects.toThrow();
   });
 
   it("preserves scheduled stable and extended-stable image refresh preparation", async () => {
@@ -391,7 +395,7 @@ describe("prepared Docker publication", () => {
     fixture.run.path = ".github/workflows/docker-image-refresh.yml";
     fixture.run.event = "schedule";
     expect(
-      verifyDockerReleaseProducer(fixture.manifest, {
+      await verifyDockerReleaseProducer(fixture.manifest, {
         publisherSha: toolingSha,
         readApi: fixture.readApi,
       }),
@@ -640,7 +644,7 @@ describe("prepared Docker publication", () => {
       };
       expect(validateDockerReleaseManifest(manifest, expected)).toBe(manifest);
       expect(
-        verifyDockerReleaseProducer(manifest, {
+        await verifyDockerReleaseProducer(manifest, {
           publisherSha: toolingSha,
           readApi: fixture.readApi,
         }),
@@ -675,18 +679,18 @@ describe("prepared Docker publication", () => {
       );
       fixture.run.run_attempt += 1;
       expect(
-        verifyDockerReleaseProducer(manifest, {
+        await verifyDockerReleaseProducer(manifest, {
           publisherSha: toolingSha,
           readApi: fixture.readApi,
         }),
       ).toBe(manifest);
       fixture.attemptRun.conclusion = "failure";
-      expect(() =>
+      await expect(
         verifyDockerReleaseProducer(manifest, {
           publisherSha: toolingSha,
           readApi: fixture.readApi,
         }),
-      ).toThrow("Historical Docker producer did not qualify");
+      ).rejects.toThrow("Historical Docker producer did not qualify");
     },
   );
 

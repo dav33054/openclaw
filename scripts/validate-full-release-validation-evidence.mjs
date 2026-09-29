@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { text } from "node:stream/consumers";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import {
   normalizePublicationIntent,
   publicationAdmissionContract,
@@ -18,8 +19,10 @@ import {
   isSplitChangelogEvidenceDelta,
   SPLIT_CHANGELOG_EVIDENCE_REUSE_POLICY,
 } from "./full-release-validation-policy.mjs";
+import { sortJsonValueKeys } from "./lib/canonical-json.mjs";
 import { resolveReleaseContextIdentity } from "./lib/release-context.mjs";
 import { createReleaseEvidenceClient, validateReleaseRunEvidence } from "./release-ci-summary.mjs";
+import { qualificationAdmissionContract } from "./release-qualification-coverage.mjs";
 
 const FULL_RELEASE_WORKFLOW = "Full Release Validation";
 const FULL_RELEASE_WORKFLOW_PATH = ".github/workflows/full-release-validation.yml";
@@ -63,7 +66,7 @@ function displayValue(value) {
  * @typedef {object} StrictReleaseEvidence
  * @property {unknown} [schema]
  * @property {unknown} [valid]
- * @property {{ runId?: unknown, targetSha?: unknown, runAttempt?: unknown, manifest?: unknown }} [current]
+ * @property {{ runId?: unknown, targetSha?: unknown, runAttempt?: unknown, manifest?: unknown, workflowRefProof?: unknown }} [current]
  * @property {{ runId?: unknown, targetSha?: unknown }} [root]
  * @property {{ changedPaths?: unknown, evidenceSha?: unknown, policy?: unknown, rootRunId?: unknown, selectedRunId?: unknown }} [evidenceReuse]
  * @property {{ allRequiredSucceeded?: unknown }} [conclusions]
@@ -90,6 +93,7 @@ function displayValue(value) {
  * @property {unknown} [sourceParentRunAttempt]
  * @property {{ package?: { version?: unknown } }} [candidateBinding]
  * @property {{ coveragePolicy?: unknown, targetVersion?: unknown, targetContextRef?: unknown }} [validationInputs]
+ * @property {unknown} [qualificationCoverage]
  * @property {{ changedPaths?: unknown, evidenceSha?: unknown, policy?: unknown, runId?: unknown, selectedRunId?: unknown }} [evidenceReuse]
  */
 /**
@@ -227,29 +231,6 @@ export function validateFullReleaseValidationEvidence({
       `Full release validation manifest must use version 3 or 4, got ${displayValue(manifest.version)}.`,
     );
   }
-  const coveragePolicy = normalizeReleaseCoveragePolicy({
-    ...manifest.validationInputs,
-    candidateVersion: manifest.candidateBinding?.package?.version,
-    releaseProfile: manifest.releaseProfile,
-    rerunGroup: manifest.rerunGroup,
-    runReleaseSoak: manifest.runReleaseSoak,
-  });
-  const coveredReleaseTag =
-    coveragePolicy === "npm-stable-v1"
-      ? resolveReleaseContextIdentity(
-          scalarString(manifest.validationInputs?.targetContextRef) ||
-            scalarString(manifest.targetRef),
-          scalarString(manifest.validationInputs?.targetVersion),
-        )?.releaseTag
-      : `v${scalarString(manifest.validationInputs?.targetVersion)}`;
-  if (
-    coveragePolicy &&
-    (manifest.version !== 4 || !coveredReleaseTag || expectedReleaseTag !== coveredReleaseTag)
-  ) {
-    throw new Error(
-      "Release coverage policy requires version 4 evidence for the exact publication tag.",
-    );
-  }
   const manifestChecks = [
     ["workflowName", FULL_RELEASE_WORKFLOW],
     ["runId", String(expectedRunId)],
@@ -283,8 +264,46 @@ export function validateFullReleaseValidationEvidence({
     targetSha: expectedTargetSha,
     parentRunId: String(expectedRunId),
   });
+  if (manifest.qualificationCoverage && !sourceAdmission?.qualificationAdmission) {
+    throw new Error("Candidate-owned publication evidence omitted admission");
+  }
+  const coveragePolicy = manifest.qualificationCoverage
+    ? sourceAdmission?.coverage.coverage_policy || undefined
+    : normalizeReleaseCoveragePolicy({
+        ...manifest.validationInputs,
+        candidateVersion: manifest.candidateBinding?.package?.version,
+        releaseProfile: manifest.releaseProfile,
+        rerunGroup: manifest.rerunGroup,
+        runReleaseSoak: manifest.runReleaseSoak,
+      });
+  const coveredReleaseTag =
+    coveragePolicy === "npm-stable-v1"
+      ? resolveReleaseContextIdentity(
+          scalarString(manifest.validationInputs?.targetContextRef) ||
+            scalarString(manifest.targetRef),
+          scalarString(manifest.validationInputs?.targetVersion),
+        )?.releaseTag
+      : `v${scalarString(manifest.validationInputs?.targetVersion)}`;
+  if (
+    coveragePolicy &&
+    (manifest.version !== 4 || !coveredReleaseTag || expectedReleaseTag !== coveredReleaseTag)
+  ) {
+    throw new Error(
+      "Release coverage policy requires version 4 evidence for the exact publication tag.",
+    );
+  }
+
   if (manifest.publicationAdmissionContract !== registryContract) {
     throw new Error("Publication evidence differs from its immutable registry-admission contract.");
+  }
+  if (
+    qualificationAdmissionContract(workflowSource) === "1" &&
+    sourceAdmission?.validationPurpose === "publish" &&
+    !sourceAdmission.qualificationAdmission
+  ) {
+    throw new Error(
+      "Frozen publication qualification requires independently authenticated P admission",
+    );
   }
   const publicationAdmission = validatePublicationAdmissionBinding(manifest, {
     publicationAdmissionContract: registryContract,
@@ -369,6 +388,24 @@ export function validateFullReleaseValidationEvidence({
     }
   }
 
+  const candidateOwned = sourceAdmission?.qualificationAdmission !== undefined;
+  if (candidateOwned) {
+    const authenticated = strict();
+    if (
+      authenticated.valid !== true ||
+      authenticated.current?.runId !== String(expectedRunId) ||
+      authenticated.current?.runAttempt !== run.runAttempt ||
+      authenticated.current?.targetSha !== expectedTargetSha ||
+      authenticated.current?.workflowRefProof !== "candidate-owned-admission-v1" ||
+      authenticated.conclusions?.allRequiredSucceeded !== true ||
+      publicationObservationJson(authenticated.current?.manifest) !==
+        publicationObservationJson(manifest)
+    ) {
+      throw new Error(
+        "Candidate-owned qualification requires authenticated complete frozen evidence",
+      );
+    }
+  }
   const pinnedMatch = PINNED_BRANCH_PATTERN.exec(run.headBranch ?? "");
   if (!pinnedMatch) {
     if (protectedTag) {
@@ -407,17 +444,23 @@ export function validateFullReleaseValidationEvidence({
   // The protected tag authenticates the current publisher. An older validation
   // producer remains trusted only through its independent current-main lineage.
   const historicalProtectedProducer = protectedTag && run.headSha !== expectedTrustedWorkflowSha;
-  if ((historicalProtectedProducer || !protectedTag) && !isTrustedMainAncestor?.(run.headSha)) {
+  if (
+    !candidateOwned &&
+    (historicalProtectedProducer || !protectedTag) &&
+    !isTrustedMainAncestor?.(run.headSha)
+  ) {
     const subject = protectedTag
       ? "Protected-tag release evidence workflow SHA"
       : "SHA-pinned validation workflow";
     throw new Error(`${subject} ${run.headSha} is not reachable from current main.`);
   }
-  const source = protectedTag
-    ? historicalProtectedProducer
-      ? "sha-pinned-protected-tag-main-ancestor"
-      : "sha-pinned-protected-tag"
-    : "sha-pinned-main";
+  const source = candidateOwned
+    ? "candidate-owned-admission-v1"
+    : protectedTag
+      ? historicalProtectedProducer
+        ? "sha-pinned-protected-tag-main-ancestor"
+        : "sha-pinned-protected-tag"
+      : "sha-pinned-main";
   if (Object.hasOwn(manifest, "evidenceReuse")) {
     const reuse = manifest.evidenceReuse;
     const exactTarget =
@@ -527,6 +570,58 @@ export async function authenticateFullReleaseValidationEvidence(options, client)
     validateEvidenceReuseStrictly: () => evidence,
   });
   return { ...result, evidence, publicationAdmission: manifest.publicationAdmission ?? null };
+}
+
+// Publication consumers replace ancestry only after the full FRV owner has
+// authenticated its P admission, frozen coverage, exact attempts and artifacts.
+export async function authenticateCandidateOwnedArtifact({
+  manifest,
+  repository,
+  candidateSha,
+  qualificationSha,
+  publisherSha,
+  publisherFullRef = "refs/heads/main",
+  client,
+}) {
+  if (!manifest?.sourceAdmission?.qualificationAdmission) {
+    return null;
+  }
+  if (
+    candidateSha !== qualificationSha ||
+    manifest.targetSha !== candidateSha ||
+    manifest.workflowSha !== qualificationSha
+  ) {
+    throw new Error("Candidate-owned artifact source and qualification SHA differ");
+  }
+  const evidence = await validateReleaseRunEvidence(
+    {
+      repository,
+      runId: String(manifest.runId),
+      trustedWorkflowFullRef: publisherFullRef,
+      trustedWorkflowRef: publisherFullRef.replace(/^refs\/(?:heads|tags)\//u, ""),
+      trustedWorkflowSha: publisherSha,
+      verifierSourceSha: publisherSha,
+      verifierSourceContent: readFileSync(new URL("./release-ci-summary.mjs", import.meta.url)),
+    },
+    client,
+  );
+  if (
+    evidence.current.manifest.sourceAdmission?.validationPurpose !== "publish" ||
+    evidence.current.manifest.publicationAdmissionContract !== "1" ||
+    !evidence.current.manifest.publicationAdmission
+  ) {
+    throw new Error("Publication artifacts require publish-purpose admitted qualification");
+  }
+  if (
+    evidence.current.targetSha !== candidateSha ||
+    evidence.current.runAttempt !== Number(manifest.runAttempt) ||
+    evidence.current.workflowRefProof !== "candidate-owned-admission-v1" ||
+    !evidence.conclusions.allRequiredSucceeded ||
+    !isDeepStrictEqual(evidence.current.manifest, sortJsonValueKeys(manifest))
+  ) {
+    throw new Error("Publication artifact is not bound to authenticated candidate qualification");
+  }
+  return evidence;
 }
 
 function gitIsAncestor(ancestor, target) {

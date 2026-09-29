@@ -3014,6 +3014,7 @@ AFTER_CD
     );
     expect(baseline.env).toEqual({
       TARGET_CONTEXT_REF: "${{ inputs.target_context_ref || github.base_ref || github.ref_name }}",
+      QUALIFICATION_BASELINES_JSON: "${{ inputs.qualification_baselines_json }}",
     });
     expect(job.steps.indexOf(baseline)).toBeLessThan(job.steps.indexOf(run));
     const survivorProof = job.steps.find(
@@ -3048,6 +3049,7 @@ AFTER_CD
 
   it.each([
     { candidate: "2026.9.3", expected: "openclaw@2026.9.2" },
+    { candidate: "2026.9.3", captured: "openclaw@2026.9.1", expected: "openclaw@2026.9.1" },
     { candidate: "2026.9.4-beta.1", expected: "openclaw@2026.9.3" },
     {
       candidate: "2026.6.35",
@@ -3069,7 +3071,11 @@ AFTER_CD
       const tooling = path.join(root, ".ci-harness", "scripts", "lib");
       mkdirSync(bin);
       mkdirSync(tooling, { recursive: true });
-      for (const name of ["release-upgrade-baseline.mjs", "release-version.mjs"]) {
+      for (const name of [
+        "release-upgrade-baseline.mjs",
+        "release-version.mjs",
+        "canonical-json.mjs",
+      ]) {
         copyFileSync(path.resolve("scripts", "lib", name), path.join(tooling, name));
       }
       writeFileSync(
@@ -3085,6 +3091,7 @@ AFTER_CD
         path.join(bin, "npm"),
         `#!${process.execPath}
 const args = process.argv.slice(2);
+if (process.env.QUALIFICATION_BASELINES_JSON) throw new Error("frozen qualification must not re-resolve npm baselines");
 if (JSON.stringify(args) !== JSON.stringify(["view", "openclaw", "versions", "--json", "--silent", "--prefer-online"])) process.exit(2);
 console.log(JSON.stringify(["2026.6.34", "2026.6.35", "2026.9.1", "2026.9.2", "2026.9.3", "2026.9.4-beta.1"]));
 `,
@@ -3111,6 +3118,12 @@ require("node:fs").writeFileSync("scheduler-baseline", process.env.OPENCLAW_UPGR
             OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC:
               typeof inheritedBaseline === "string" ? inheritedBaseline : "",
             TARGET_CONTEXT_REF: fixture.context ?? "main",
+            QUALIFICATION_BASELINES_JSON: fixture.captured
+              ? JSON.stringify({
+                  upgradeBaseline: fixture.captured,
+                  upgradeSurvivorBaselines: [fixture.captured],
+                })
+              : "",
           },
         },
       );
@@ -7912,6 +7925,51 @@ server.listen(0, "127.0.0.1", () => {
     expect(manualCheckoutStep.run).toContain("workflow_dispatch target_ref");
   });
 
+  it.each([true, false])(
+    "pins qualification comparison inputs when workflow equals candidate: %s",
+    (sameRevision) => {
+      const step = readCiWorkflow().jobs.preflight.steps.find(
+        (entry: WorkflowStep) => entry.name === "Resolve exact diff base",
+      );
+      const root = tempDirs.make("frozen-ci-base-");
+      const head = "a".repeat(40);
+      const workflow = sameRevision ? head : "b".repeat(40);
+      const base = sameRevision ? head : "c".repeat(40);
+      const output = path.join(root, "output");
+      const result = runWorkflowShellScript(
+        `git() { [[ "$*" == "rev-parse HEAD" ]] || return 1; printf "%s\\n" "$TEST_HEAD"; }
+gh() {
+  [[ "$*" == "api --method GET repos/openclaw/openclaw/compare/$WORKFLOW_REVISION...$TEST_HEAD --jq .merge_base_commit.sha" ]] || return 1
+  printf "%s\\n" "$TEST_BASE"
+}
+${step.run}`,
+        {
+          cwd: root,
+          env: {
+            PATH: process.env.PATH,
+            DEFAULT_BRANCH: "main",
+            DISPATCH_ID: "full-release-validation-123",
+            EVENT_BASE_SHA: "",
+            GITHUB_EVENT_NAME: "workflow_dispatch",
+            GITHUB_REPOSITORY: "openclaw/openclaw",
+            GITHUB_OUTPUT: output,
+            RELEASE_GATE: "false",
+            TARGET_CONTEXT_REF: "release/2026.9.6",
+            WORKFLOW_REVISION: workflow,
+            TEST_HEAD: head,
+            TEST_BASE: base,
+          },
+        },
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(readWorkflowOutputs(output)).toMatchObject({
+        default_sha: workflow,
+        sha: base,
+        head_sha: head,
+      });
+    },
+  );
+
   it("keeps manual candidates separate from trusted cache authority", () => {
     const workflow = readCiWorkflow();
     const preflight = workflow.jobs.preflight;
@@ -8880,6 +8938,8 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       const result = spawnSync(
         "bash",
         [
+          "--noprofile",
+          "--norc",
           "-c",
           `set -euo pipefail\n${discoveryBlock}\nprintf 'result=%s\\n' "$CRABBOX_AWS_SSH_CIDRS"`,
         ],
@@ -8898,14 +8958,18 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
 
       for (const invalidIp of ["999.0.0.1", "203.0.113.7."]) {
         writeFileSync(callCount, "0\n");
-        const invalidResult = spawnSync("bash", ["-c", `set -euo pipefail\n${discoveryBlock}`], {
-          encoding: "utf8",
-          env: {
-            CURL_CALL_COUNT: callCount,
-            CURL_SUCCESS_IP: invalidIp,
-            PATH: `${fakeBin}:${process.env.PATH}`,
+        const invalidResult = spawnSync(
+          "bash",
+          ["--noprofile", "--norc", "-c", `set -euo pipefail\n${discoveryBlock}`],
+          {
+            encoding: "utf8",
+            env: {
+              CURL_CALL_COUNT: callCount,
+              CURL_SUCCESS_IP: invalidIp,
+              PATH: `${fakeBin}:${process.env.PATH}`,
+            },
           },
-        });
+        );
         expect(invalidResult.status).toBe(1);
         expect(invalidResult.stderr).toContain(
           "Could not resolve GitHub runner public IPv4 for AWS SSH ingress.",

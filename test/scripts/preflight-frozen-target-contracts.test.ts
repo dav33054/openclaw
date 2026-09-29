@@ -20,8 +20,12 @@ import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 const temps = useAutoCleanupTempDirTracker(afterEach);
 const repo = resolve(".");
 const entrypoint = "scripts/preflight-frozen-target-contracts.mjs";
+
 const closure = [
   entrypoint,
+  "scripts/lib/frozen-target-workflow-request.mjs",
+  "scripts/lib/release-upgrade-baseline.mjs",
+  "scripts/lib/canonical-json.mjs",
   "scripts/lib/docker-e2e-plan.mts",
   "scripts/lib/docker-e2e-scenarios.mts",
   "scripts/lib/official-external-channel-catalog.json",
@@ -552,6 +556,10 @@ describe("frozen admission bootstrap repairs", () => {
 
   it.each([
     reader,
+    "scripts/lib/frozen-target-workflow-request.mjs",
+    "scripts/lib/release-upgrade-baseline.mjs",
+    "scripts/lib/release-version.mjs",
+    "scripts/lib/canonical-json.mjs",
     "scripts/lib/docker-e2e-scenarios.mts",
     "scripts/lib/record-shared.mjs",
     shell,

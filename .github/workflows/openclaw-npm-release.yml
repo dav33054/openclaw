@@ -556,9 +556,16 @@ jobs:
             timeout --signal=TERM --kill-after=10s 120s git -C trusted-workflow fetch \
               --no-tags --depth=1 origin "$preflight_head_sha"
           fi
-          if [[ "$extended_stable_preflight" != "true" ]] && ! git -C trusted-workflow merge-base --is-ancestor "$preflight_head_sha" "$WORKFLOW_SHA"; then
-            echo "OpenClaw npm preflight tooling is not on the trusted publish workflow lineage." >&2
-            exit 1
+          if [[ "$extended_stable_preflight" != "true" ]]; then
+            lineage_args=()
+            if [[ "$full_release_preflight" == "true" ]]; then
+              lineage_args+=(--full-release-manifest "$full_manifest")
+            fi
+            node trusted-workflow/scripts/npm-preflight-tooling-identity.mjs \
+              --verify-publication-lineage "${lineage_args[@]}" \
+              --repository "$GITHUB_REPOSITORY" --source-sha "$EXPECTED_RELEASE_SHA" \
+              --workflow-sha "$preflight_head_sha" --publisher-sha "$WORKFLOW_SHA" \
+              --run-id "$PREFLIGHT_RUN_ID" --run-attempt "$PREFLIGHT_RUN_ATTEMPT"
           fi
           echo "head_sha=${preflight_head_sha}" >> "$GITHUB_OUTPUT"
           echo "head_branch=${preflight_head_branch}" >> "$GITHUB_OUTPUT"
