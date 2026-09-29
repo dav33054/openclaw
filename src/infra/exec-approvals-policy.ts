@@ -1,3 +1,5 @@
+import { consumeRootCommandOptionToken } from "./cli-root-options.js";
+import { hasUnquotedShellExpansionSource } from "./command-analysis/risks.js";
 import type { AllowAlwaysPersistenceDecision } from "./exec-approvals-contracts.js";
 // Resolves exec approval requirements and approval-decision availability.
 import {
@@ -7,6 +9,12 @@ import {
   type ExecAsk,
   type ExecSecurity,
 } from "./exec-approvals-core.js";
+import type { ExecAuthorizationPlan } from "./exec-authorization-plan.js";
+import { parseExecArgvToken, type CommandResolution } from "./exec-command-resolution.js";
+import { getTrustedSafeBinDirs, isTrustedSafeBinPath } from "./exec-safe-bin-trust.js";
+import { resolveEnvironmentValue } from "./process-env.js";
+import { hasPosixShellStartupBeforeInlineCommand } from "./shell-wrapper-resolution.js";
+import { analyzeWindowsShellCommand, tokenizeWindowsSegment } from "./windows-shell-command.js";
 
 export function requiresExecApproval(params: {
   ask: ExecAsk;
@@ -50,70 +58,189 @@ function isReadOnlySecurityAuditSuppressionInspection(argv: string[]): boolean {
   }
   offset += 1;
   while (offset < argv.length) {
-    const arg = argv[offset];
-    if (["--dev", "--no-color"].includes(arg ?? "")) {
-      offset += 1;
-      continue;
+    const consumed = consumeRootCommandOptionToken(argv, offset);
+    if (!consumed) {
+      break;
     }
-    if (["--profile", "--container", "--log-level"].includes(arg ?? "")) {
-      offset += 2;
-      continue;
-    }
-    if (
-      arg?.startsWith("--profile=") ||
-      arg?.startsWith("--container=") ||
-      arg?.startsWith("--log-level=")
-    ) {
-      offset += 1;
-      continue;
-    }
-    break;
+    offset += consumed;
   }
   return (
     argv[offset] === "config" && ["get", "schema", "validate"].includes(argv[offset + 1] ?? "")
   );
 }
 
-function removeParsedSegmentText(
-  command: string,
-  segments: Array<{ argv?: string[]; raw?: string }>,
-): string {
-  let remaining = command;
-  for (const segment of segments) {
-    const raw = (segment.raw ?? segment.argv?.join(" "))?.trim();
-    if (!raw) {
+// These are inspection semantics, not an exec allowlist. Unknown options stay
+// approval-gated; in particular rg can launch programs via --pre/--hostname-bin
+// or decompression. Do not infer read-only behavior from an executable grant.
+const RIPGREP_INSPECTION_OPTIONS = {
+  boolean:
+    "-n -N -l -L -i -s -S -F -w -x -v -c -q -o -H -I -a -U -u --hidden --files --no-ignore --no-ignore-vcs --fixed-strings --line-number --files-with-matches --files-without-match --count --only-matching --no-heading --heading --json --no-config --no-messages --follow",
+  value:
+    "-e -f -g -t -T -m -A -B -C --regexp --file --glob --iglob --type --type-not --max-count --after-context --before-context --context --max-depth --encoding --color --sort --sortr",
+};
+
+function isReadOnlyFileInspection(argv: string[], env?: NodeJS.ProcessEnv): boolean {
+  const command = normalizeCommandName(argv[0]);
+  if (command === "sed") {
+    // Only a print-only script followed by filenames, never -e/-f/-i or scripts
+    // that can write files or launch commands.
+    return (
+      argv[1] === "-n" &&
+      /^(\d+|\$)(,(\d+|\$))?p$/.test(argv[2] ?? "") &&
+      argv.slice(3).every((arg) => !arg.startsWith("-"))
+    );
+  }
+  if (["cat", "grep", "head", "tail", "wc"].includes(command)) {
+    return true;
+  }
+  if (command !== "rg") {
+    return false;
+  }
+  const booleanFlags = new Set(RIPGREP_INSPECTION_OPTIONS.boolean.split(" "));
+  const valueFlags = new Set(RIPGREP_INSPECTION_OPTIONS.value.split(" "));
+  let noRipgrepConfig = false;
+  for (let i = 1; i < argv.length; i += 1) {
+    const token = parseExecArgvToken(argv[i] ?? "");
+    if (token.kind === "terminator") {
+      break;
+    }
+    if (token.kind !== "option") {
       continue;
     }
-    remaining = remaining.replace(raw, " ");
+    const flags = token.style === "long" ? [token.flag] : token.flags;
+    for (const [index, flag] of flags.entries()) {
+      const attached =
+        token.style === "long" ? token.inlineValue !== undefined : index < flags.length - 1;
+      if (valueFlags.has(flag)) {
+        if (!attached && ++i >= argv.length) {
+          return false;
+        }
+        break;
+      }
+      if (!booleanFlags.has(flag) || (token.style === "long" && attached)) {
+        return false;
+      }
+      noRipgrepConfig ||= flag === "--no-config";
+    }
   }
-  return remaining;
+  return (
+    noRipgrepConfig ||
+    !(
+      resolveEnvironmentValue(env, "RIPGREP_CONFIG_PATH") ??
+      resolveEnvironmentValue(process.env, "RIPGREP_CONFIG_PATH")
+    )
+  );
 }
 
-export function commandRequiresSecurityAuditSuppressionApproval(params: {
+export function isTrustedInspectionCommand(
+  resolution: CommandResolution | null | undefined,
+  trustedDirs?: ReadonlySet<string>,
+): boolean {
+  // Effective executable identity cannot attest the dispatch wrappers that launch it.
+  if (!resolution || resolution.policyBlocked || resolution.wrapperChain?.length) {
+    return false;
+  }
+  const executable = resolution.execution;
+  const dirs = trustedDirs ?? getTrustedSafeBinDirs({ safeBins: [executable.executableName] });
+  return [executable.resolvedPath, executable.resolvedRealPath].every(
+    (resolvedPath) => resolvedPath && isTrustedSafeBinPath({ resolvedPath, trustedDirs: dirs }),
+  );
+}
+
+/** File inspections require the execution host to preserve the analyzed dispatch. */
+export function resolveSecurityAuditSuppressionPolicy(params: {
   command: string;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   segments: Array<{ argv: string[]; raw?: string }>;
-}): boolean {
-  let sawSegmentMention = false;
-  for (const segment of params.segments) {
-    const segmentText = `${segment.raw ?? ""} ${segment.argv.join(" ")}`;
-    if (!textMentionsSecurityAuditSuppressions(segmentText)) {
-      continue;
-    }
-    sawSegmentMention = true;
-    if (!isReadOnlySecurityAuditSuppressionInspection(segment.argv)) {
-      return true;
-    }
+  originalArgv?: string[];
+  analysisOk?: boolean;
+  authorizationPlan?: ExecAuthorizationPlan;
+  trustedSafeBinDirs?: ReadonlySet<string>;
+  transportResolution?: CommandResolution;
+  /** Remote preflight cannot resolve node executables; the node checks trust at dispatch. */
+  deferReaderTrustToNode?: boolean;
+}): "none" | "inspection" | "approval" {
+  if (
+    !textMentionsSecurityAuditSuppressions(params.command) &&
+    !textMentionsSecurityAuditSuppressions(params.originalArgv?.join(" ") ?? "") &&
+    !params.segments.some((segment) =>
+      textMentionsSecurityAuditSuppressions(segment.argv.join(" ")),
+    )
+  ) {
+    return "none";
   }
-  if (sawSegmentMention) {
-    const unparsedText = removeParsedSegmentText(params.command, params.segments);
-    if (textMentionsSecurityAuditSuppressions(unparsedText)) {
-      return true;
-    }
-    return false;
+  if (
+    hasPosixShellStartupBeforeInlineCommand(params.originalArgv ?? []) ||
+    (params.transportResolution &&
+      !params.deferReaderTrustToNode &&
+      !isTrustedInspectionCommand(params.transportResolution, params.trustedSafeBinDirs))
+  ) {
+    return "approval";
   }
-  return textMentionsSecurityAuditSuppressions(params.command);
+  const plan = params.authorizationPlan;
+  if (plan === undefined) {
+    // Shipped SDK callers omit analysis metadata; revalidate their direct source.
+    // Windows wrappers must never inherit the exception from a stripped payload.
+    const [segment] = params.segments;
+    const argv = tokenizeWindowsSegment(params.command) ?? [];
+    const analysisOk =
+      params.analysisOk === undefined ? analyzeWindowsShellCommand(params).ok : params.analysisOk;
+    return analysisOk &&
+      params.segments.length === 1 &&
+      (segment?.raw ?? segment?.argv.join(" "))?.trim() === params.command.trim() &&
+      argv.length === segment?.argv.length &&
+      argv.every((arg, index) => arg === segment?.argv[index]) &&
+      isReadOnlySecurityAuditSuppressionInspection(argv)
+      ? "none"
+      : "approval";
+  }
+  if (!plan.ok || plan.originalCommand !== params.command || plan.groups.length === 0) {
+    return "approval";
+  }
+  // A parsed prefix or a reader feeding a writer cannot exempt the whole command.
+  let containsFileInspection = false;
+  const readOnly = plan.groups.every(
+    (group) =>
+      group.candidates.length > 0 &&
+      group.candidates.every((candidate) => {
+        const argv = candidate.sourceSegment.sourceArgv ?? candidate.sourceSegment.argv;
+        const execution = candidate.sourceSegment.resolution?.execution;
+        const configRead = isReadOnlySecurityAuditSuppressionInspection(argv);
+        containsFileInspection ||= !configRead;
+        const wrapper =
+          candidate.transport.kind === "shell-wrapper"
+            ? candidate.transport.wrapperSegment
+            : undefined;
+        return (
+          candidate.trustMode === "executable" &&
+          candidate.reasons.every((reason) => reason === "inline-eval") &&
+          (!wrapper ||
+            !hasPosixShellStartupBeforeInlineCommand(wrapper.sourceArgv ?? wrapper.argv)) &&
+          ((plan.dialect === "argv" && candidate.transport.kind === "direct") ||
+            !hasUnquotedShellExpansionSource(candidate.sourceStep.text)) &&
+          (configRead || isReadOnlyFileInspection(argv, params.env)) &&
+          (params.deferReaderTrustToNode ||
+            !wrapper ||
+            isTrustedInspectionCommand(wrapper.resolution, params.trustedSafeBinDirs)) &&
+          (configRead ||
+            params.deferReaderTrustToNode ||
+            (isTrustedInspectionCommand(
+              candidate.sourceSegment.resolution,
+              params.trustedSafeBinDirs,
+            ) &&
+              normalizeCommandName(argv[0]) === normalizeCommandName(execution?.resolvedRealPath)))
+        );
+      }),
+  );
+  return readOnly ? (containsFileInspection ? "inspection" : "none") : "approval";
+}
+
+/** Retains the shipped SDK boolean contract; hosts can consume the binding decision above. */
+export function commandRequiresSecurityAuditSuppressionApproval(
+  params: Parameters<typeof resolveSecurityAuditSuppressionPolicy>[0],
+): boolean {
+  return resolveSecurityAuditSuppressionPolicy(params) === "approval";
 }
 
 export function minSecurity(a: ExecSecurity, b: ExecSecurity): ExecSecurity {

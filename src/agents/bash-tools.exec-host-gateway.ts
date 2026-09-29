@@ -15,10 +15,10 @@ import { describeInterpreterInlineEval } from "../infra/command-analysis/inline-
 import { detectInlineEvalInSegments } from "../infra/command-analysis/risks.js";
 import { lookupCronRunExecSource } from "../infra/cron-run-exec-source.js";
 import { emitTrustedSecurityEvent } from "../infra/diagnostic-events.js";
+import { resolveSecurityAuditSuppressionPolicy } from "../infra/exec-approvals-policy.js";
 import {
   type AllowAlwaysPersistenceDecision,
   commitExecAuthorizationLocked,
-  commandRequiresSecurityAuditSuppressionApproval,
   countObsoleteGeneratedExecApprovals,
   createExecApprovalPolicySnapshot,
   type ExecApprovalUsageAuthorization,
@@ -86,6 +86,7 @@ import {
   resolveExecHostApprovalContext,
   sendExecApprovalFollowupResult,
 } from "./bash-tools.exec-host-shared.js";
+import { canBindHostInspection } from "./bash-tools.exec-host-spawn.js";
 import { appendExecTimeoutRetryGuidance } from "./bash-tools.exec-output.js";
 import {
   createApprovalSlug,
@@ -521,10 +522,17 @@ export async function processGatewayAllowlist(
     commandText: params.command,
   });
   const allowlistAuthorizationSatisfied = analysisOk && allowlistEval.allowlistSatisfied;
-  const shouldPrepareAllowlistExecution =
-    hostSecurity === "allowlist" || fallbackSecurity === "allowlist";
+  const suppressionPolicy = resolveSecurityAuditSuppressionPolicy({
+    command: params.command,
+    trustedSafeBinDirs: params.trustedSafeBinDirs,
+    env: params.env,
+    ...allowlistEval,
+  });
+  const protectSuppressions = !(hostSecurity === "full" && hostAsk === "off");
+  const bindInspection = protectSuppressions && suppressionPolicy === "inspection";
   const gatewayEnforcedCommand =
-    shouldPrepareAllowlistExecution && analysisOk
+    (hostSecurity === "allowlist" || fallbackSecurity === "allowlist" || bindInspection) &&
+    analysisOk
       ? process.platform === "win32"
         ? buildEnforcedShellCommand({
             command: params.command,
@@ -535,24 +543,18 @@ export async function processGatewayAllowlist(
           ? buildAuthorizedShellCommandFromPlan({
               plan: allowlistEval.authorizationPlan,
               mode: "enforced",
-              segmentSatisfiedBy: allowlistEval.segmentSatisfiedBy,
+              segmentSatisfiedBy: bindInspection
+                ? allowlistEval.segments.map(() => null)
+                : allowlistEval.segmentSatisfiedBy,
             })
           : { ok: false as const, reason: "authorization plan unavailable" }
       : null;
-  let enforcedCommand: string | undefined;
-  let allowlistPlanUnavailableReason: string | null = null;
-  if (hostSecurity === "allowlist" && analysisOk && allowlistSatisfied) {
-    const enforced = gatewayEnforcedCommand ?? {
-      ok: false,
-      reason: "authorization plan unavailable",
-    };
-    if (!enforced.ok || !enforced.command) {
-      allowlistPlanUnavailableReason =
-        ("reason" in enforced ? enforced.reason : undefined) ?? "unsupported platform";
-    } else {
-      enforcedCommand = enforced.command;
-    }
-  }
+  const enforcedCommand =
+    (allowlistSatisfied || bindInspection) &&
+    gatewayEnforcedCommand?.ok &&
+    gatewayEnforcedCommand.command
+      ? gatewayEnforcedCommand.command
+      : undefined;
   const fallbackEnforcedCommand =
     fallbackSecurity === "allowlist" &&
     allowlistAuthorizationSatisfied &&
@@ -612,7 +614,7 @@ export async function processGatewayAllowlist(
           durableApprovalSatisfied &&
           (!analysisOk ||
             !allowlistSatisfied ||
-            (exactCommandDurableApprovalSatisfied && allowlistPlanUnavailableReason !== null))
+            (exactCommandDurableApprovalSatisfied && enforcedCommand === undefined))
         : options.source === "ask-fallback"
           ? fallbackSecurity === "allowlist" &&
             exactCommandDurableApprovalSatisfied &&
@@ -665,15 +667,11 @@ export async function processGatewayAllowlist(
     analysisOk &&
     allowlistSatisfied &&
     !exactCommandDurableApprovalSatisfied &&
-    !enforcedCommand &&
-    allowlistPlanUnavailableReason !== null;
+    !enforcedCommand;
   const requiresSecurityAuditSuppressionApproval =
-    commandRequiresSecurityAuditSuppressionApproval({
-      command: params.command,
-      cwd: params.workdir,
-      env: params.env,
-      segments: allowlistEval.segments,
-    }) && !(hostSecurity === "full" && hostAsk === "off");
+    protectSuppressions &&
+    (suppressionPolicy === "approval" ||
+      (bindInspection && (!enforcedCommand || !canBindHostInspection(params))));
   const policyRequiresAsk =
     requiresExecApproval({
       ask: hostAsk,
@@ -721,7 +719,8 @@ export async function processGatewayAllowlist(
   const shouldDenyUnpromptedShellExpansion =
     params.autoReview !== true &&
     requiresAllowlistPlanApproval &&
-    allowlistPlanUnavailableReason === "shell expansion in enforced arguments" &&
+    gatewayEnforcedCommand?.ok === false &&
+    gatewayEnforcedCommand.reason === "shell expansion in enforced arguments" &&
     hostAsk === "off" &&
     askFallback === "deny";
   if (shouldDenyUnpromptedShellExpansion) {
@@ -748,7 +747,7 @@ export async function processGatewayAllowlist(
     durableApprovalSatisfied &&
     (!analysisOk ||
       !allowlistSatisfied ||
-      (exactCommandDurableApprovalSatisfied && allowlistPlanUnavailableReason !== null));
+      (exactCommandDurableApprovalSatisfied && enforcedCommand === undefined));
   if (policyRequiresAsk || durableApprovalRequiresBinding) {
     // Durable text grants cannot authorize future bytes. Prepare before they
     // suppress prompting so mutable operands always return to one-shot review.

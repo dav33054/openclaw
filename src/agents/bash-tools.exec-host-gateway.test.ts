@@ -29,6 +29,7 @@ import {
   resetDiagnosticEventsForTest,
   type DiagnosticSecurityEvent,
 } from "../infra/diagnostic-events.js";
+import { evaluateShellAllowlistWithAuthorization as evaluateRealShellAllowlist } from "../infra/exec-approvals-allowlist.js";
 import type {
   ExecAllowlistEntry,
   ExecApprovalDecision,
@@ -1136,71 +1137,62 @@ describe("processGatewayAllowlist", () => {
     });
   });
 
-  it("keeps security audit suppression edits off the auto-review path", async () => {
-    const warnings: string[] = [];
-    mockHostPolicy({ hostSecurity: "full", hostAsk: "on-miss" });
-
-    const result = await runGatewayAllowlist({
-      command: "openclaw config set security.audit.suppressions '[]'",
-      security: "full",
-      ask: "on-miss",
-      autoReview: true,
-      warnings,
-    });
-
-    expect(defaultExecAutoReviewerMock).not.toHaveBeenCalled();
-    expect(createExecApprovalRequestRouteMock).toHaveBeenCalledTimes(1);
-    expect(warnings[0]).toContain("explicit approval");
-    expect(result.deniedResult?.details.status).toBe("failed");
-  });
-
-  it("requires suppression edit approval when allowlist analysis only returns a read-only prefix", async () => {
-    mockAllowlist({
-      segments: [
-        { resolution: null, argv: ["openclaw", "config", "get", "security.audit.suppressions"] },
-      ],
-    });
-    mockHostPolicy({ hostSecurity: "full", hostAsk: "on-miss" });
-
-    const result = await runGatewayAllowlist({
-      command:
-        "openclaw config get security.audit.suppressions; openclaw config set security.audit.suppressions '[]'",
-      security: "full",
-      ask: "on-miss",
-    });
-
-    expect(createExecApprovalRequestRouteMock).toHaveBeenCalledTimes(1);
-    expect(result.deniedResult?.details.status).toBe("failed");
-  });
-
-  it("requires suppression edit approval when a heredoc patch follows read-only inspection", async () => {
-    mockAllowlist({
-      segments: [
-        {
-          raw: "openclaw config get security.audit.suppressions",
-          resolution: null,
-          argv: ["openclaw", "config", "get", "security.audit.suppressions"],
-        },
-        {
-          raw: "openclaw config patch --stdin <<'EOF'",
-          resolution: null,
-          argv: ["openclaw", "config", "patch", "--stdin"],
-        },
-      ],
-    });
-    mockHostPolicy({ hostSecurity: "full", hostAsk: "on-miss" });
-
-    const result = await runGatewayAllowlist({
-      command: `openclaw config get security.audit.suppressions; openclaw config patch --stdin <<'EOF'
-{"security":{"audit":{"suppressions":[]}}}
-EOF`,
-      security: "full",
-      ask: "on-miss",
-    });
-
-    expect(createExecApprovalRequestRouteMock).toHaveBeenCalledTimes(1);
-    expect(result.deniedResult?.details.status).toBe("failed");
-  });
+  const inspection = "openclaw config get security.audit.suppressions";
+  const mutation = "openclaw config set security.audit.suppressions '[]'";
+  it.each([
+    [mutation, "approval", process.platform],
+    [inspection, "allow", "win32"],
+    ["pnpm openclaw --profile rescue config schema security.audit.suppressions", "allow", "win32"],
+    [inspection + " > openclaw.json", "deny", "win32"],
+    [inspection + "; whoami", "approval", "win32"],
+    [inspection + "; " + mutation, "approval", process.platform, inspection],
+    [
+      inspection +
+        '; openclaw config patch --stdin <<\'EOF\'\n{"security":{"audit":{"suppressions":[]}}}\nEOF',
+      "deny",
+      process.platform,
+    ],
+    ...(process.platform === "win32"
+      ? []
+      : ([
+          ["grep security.audit.suppressions src | head -n 10", "allow", process.platform],
+          [
+            "grep security.audit.suppressions src | tee openclaw.json",
+            "approval",
+            process.platform,
+          ],
+          ["grep security.audit.suppressions src > openclaw.json", "deny", process.platform],
+        ] as const)),
+  ] as const)(
+    "handles suppression inspection through Gateway policy: %s (outcome=%s, platform=%s)",
+    async (command, outcome, platform, analyzedCommand: string = command) => {
+      const warnings: string[] = [];
+      mockAllowlist(
+        await evaluateRealShellAllowlist({
+          command: analyzedCommand,
+          allowlist: [],
+          safeBins: new Set(),
+          platform,
+        }),
+      );
+      mockHostPolicy({ hostSecurity: "full", hostAsk: "on-miss" });
+      const result = await runGatewayAllowlist({
+        command,
+        security: "full",
+        ask: "on-miss",
+        autoReview: true,
+        warnings,
+      });
+      expect(defaultExecAutoReviewerMock).not.toHaveBeenCalled();
+      expect(createExecApprovalRequestRouteMock).toHaveBeenCalledTimes(
+        outcome === "approval" ? 1 : 0,
+      );
+      expect(result.deniedResult?.details.status).toBe(outcome === "allow" ? undefined : "failed");
+      if (outcome === "approval") {
+        expect(warnings[0]).toContain("explicit approval");
+      }
+    },
+  );
 
   it("allows durable exact-command trust to bypass the synchronous allowlist miss", async () => {
     const command = "/bin/echo durable";

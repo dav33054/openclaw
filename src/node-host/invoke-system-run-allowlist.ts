@@ -1,4 +1,5 @@
 import { expectDefined } from "@openclaw/normalization-core";
+import { resolveSecurityAuditSuppressionPolicy } from "../infra/exec-approvals-policy.js";
 /** Resolves system.run allowlist matches, argv plans, and truncated command output. */
 import {
   analyzeArgvCommand,
@@ -12,8 +13,12 @@ import {
   type ExecSecurity,
   type SkillBinTrustEntry,
 } from "../infra/exec-approvals.js";
-import type { ExecAuthorizationPlan } from "../infra/exec-authorization-plan.js";
+import {
+  planExecAuthorization,
+  type ExecAuthorizationPlan,
+} from "../infra/exec-authorization-plan.js";
 import { buildAuthorizedShellCommandFromPlan } from "../infra/exec-authorization-render.js";
+import { resolveCommandResolutionFromArgv } from "../infra/exec-command-resolution.js";
 import { resolveExecSafeBinRuntimePolicy } from "../infra/exec-safe-bin-runtime-policy.js";
 import {
   normalizeExecutableToken,
@@ -25,6 +30,7 @@ import {
   POSIX_INLINE_COMMAND_FLAGS,
   resolveInlineCommandMatch,
 } from "../infra/shell-inline-command.js";
+import { formatExecCommand } from "../infra/system-run-command.js";
 import type { RunResult } from "./invoke-types.js";
 
 /**
@@ -100,6 +106,13 @@ export async function evaluateSystemRunAllowlist(params: {
     autoAllowSkills: params.autoAllowSkills,
   });
   return {
+    authorizationPlan: await planExecAuthorization({
+      analysis,
+      command: formatExecCommand(params.argv),
+      cwd: params.cwd,
+      env: params.env,
+      platform: process.platform,
+    }),
     analysisOk: analysis.ok,
     allowlistMatches: allowlistEval.allowlistMatches,
     allowlistSatisfied:
@@ -109,6 +122,58 @@ export async function evaluateSystemRunAllowlist(params: {
     segmentAllowlistEntries: allowlistEval.segmentAllowlistEntries,
     segmentSatisfiedBy: allowlistEval.segmentSatisfiedBy,
   };
+}
+
+/** The node owns actual reader and shell-transport identity, not Gateway preflight. */
+export function resolveSystemRunSuppressionPolicy(params: {
+  argv: string[];
+  commandText: string;
+  commandPreview: string | null;
+  cwd?: string;
+  env?: Record<string, string>;
+  trustedSafeBinDirs: ReadonlySet<string>;
+  analysis: SystemRunAllowlistAnalysis;
+}): { requiresApproval: boolean; inspectionArgv?: string[] } {
+  const transport =
+    params.commandPreview === null
+      ? undefined
+      : (resolveCommandResolutionFromArgv(params.argv, params.cwd, params.env) ?? undefined);
+  const policy = resolveSecurityAuditSuppressionPolicy({
+    ...params.analysis,
+    command: params.commandPreview ?? params.commandText,
+    env: params.env,
+    trustedSafeBinDirs: params.trustedSafeBinDirs,
+    originalArgv: params.argv,
+    transportResolution: transport,
+  });
+  if (policy !== "inspection") {
+    return { requiresApproval: policy === "approval" };
+  }
+  let inspectionArgv: string[] | null = null;
+  if (params.commandPreview === null) {
+    const [segment] = params.analysis.segments;
+    inspectionArgv =
+      segment && params.analysis.segments.length === 1 ? resolvePlannedSegmentArgv(segment) : null;
+  } else if (params.analysis.authorizationPlan && transport?.execution.resolvedPath) {
+    const rendered = buildAuthorizedShellCommandFromPlan({
+      plan: params.analysis.authorizationPlan,
+      mode: "enforced",
+      segmentSatisfiedBy: params.analysis.authorizationPlan.groups.flatMap((group) =>
+        group.candidates.map(() => null),
+      ),
+    });
+    if (rendered.ok) {
+      inspectionArgv = replacePosixShellInlineCommand({
+        argv: params.argv,
+        oldCommand: params.commandPreview,
+        nextCommand: rendered.command,
+      });
+      if (inspectionArgv) {
+        inspectionArgv[0] = transport.execution.resolvedPath;
+      }
+    }
+  }
+  return { requiresApproval: !inspectionArgv, inspectionArgv: inspectionArgv ?? undefined };
 }
 
 /** Resolve the single planned argv that can replace the caller argv after allowlist approval. */
@@ -140,7 +205,7 @@ export function resolvePlannedAllowlistArgv(params: {
 
 /** Resolve final argv after safe-bin shell rewriting. */
 export async function resolveSystemRunExecArgv(params: {
-  plannedAllowlistArgv: string[] | undefined;
+  plannedExecArgv: string[] | undefined;
   argv: string[];
   security: ExecSecurity;
   isWindows: boolean;
@@ -154,7 +219,10 @@ export async function resolveSystemRunExecArgv(params: {
   segmentSatisfiedBy: ExecSegmentSatisfiedBy[];
   authorizationPlan: ExecAuthorizationPlan | undefined;
 }): Promise<string[] | null> {
-  let execArgv = params.plannedAllowlistArgv ?? params.argv;
+  if (params.plannedExecArgv) {
+    return params.plannedExecArgv;
+  }
+  let execArgv = params.argv;
   if (
     params.security !== "allowlist" ||
     params.policy.approvedByAsk ||

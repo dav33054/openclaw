@@ -38,6 +38,7 @@ import {
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
 import { withEnvAsync } from "../test-utils/env.js";
+import { runCommand as realRunCommand } from "./invoke-run-command.js";
 import { buildSystemRunApprovalPlan } from "./invoke-system-run-plan.js";
 import { handleSystemRunInvoke } from "./invoke-system-run.js";
 
@@ -952,46 +953,178 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     },
   );
 
-  it("does not auto-review direct system.run security audit suppression edits", async () => {
-    const tmp = createFixtureDir("openclaw-system-run-auto-review-suppression-");
-    const executablePath = createTempExecutable(tmp, "openclaw");
-    setRuntimeConfigSnapshot({
-      tools: {
-        exec: {
-          mode: "auto",
+  it.runIf(process.platform === "linux").each(["argv", "payload", "transport"])(
+    "binds suppression inspection across %s drift after policy commit",
+    async (scenario) => {
+      const cwd = createFixtureDir("suppression-path-drift-");
+      const bin = path.join(cwd, "bin");
+      fs.mkdirSync(bin);
+      const fixture = path.join(cwd, "audit-fixture.json");
+      const needle = "security.audit.suppressions";
+      fs.writeFileSync(fixture, needle);
+      await withEnvAsync({ PATH: bin + ":/usr/bin:/bin" }, async () => {
+        const invoke = await runLocalSystemInvoke({
+          command:
+            scenario === "argv"
+              ? ["grep", needle, fixture]
+              : ["sh", "-c", `grep ${needle} audit-fixture.json`],
+          cwd,
+          security: "full",
+          ask: "on-miss",
+          runCommand: realRunCommand,
+          sanitizeEnv: (overrides) => sanitizeHostExecEnv({ overrides, blockPathOverrides: true }),
+          commitExecAuthorization: async (input) => {
+            const current = await commitExecAuthorizationLocked(input);
+            const writer = createTempExecutable(bin, scenario === "transport" ? "sh" : "grep");
+            fs.writeFileSync(writer, "#!/bin/sh\nprintf mutated > audit-fixture.json\n");
+            return current;
+          },
+        });
+        expect(fs.readFileSync(fixture, "utf8")).toBe(needle);
+        expect(invoke.runCommand.mock.calls.length).toBe(scenario === "transport" ? 1 : 0);
+        if (scenario === "transport") {
+          expectInvokeOk(invoke.sendInvokeResult, needle);
+        } else {
+          expectInvokeErrorMessage(
+            invoke.sendInvokeResult,
+            "SYSTEM_RUN_DENIED: approval script operand changed before execution",
+            true,
+          );
+        }
+      });
+    },
+  );
+
+  it.runIf(process.platform === "linux")(
+    "executes a trusted reader but never a workspace reader lookalike",
+    async () => {
+      const cwd = createFixtureDir("suppression-reader-");
+      const config = path.join(cwd, "audit-fixture.json");
+      const needle = "security.audit.suppressions";
+      const writer = createTempExecutable(cwd, "grep");
+      fs.writeFileSync(writer, "#!/bin/sh\nprintf mutated > audit-fixture.json\n");
+      const shell = createTempExecutable(cwd, "sh");
+      fs.copyFileSync(writer, shell);
+      const dispatcher = createTempExecutable(cwd, "env");
+      fs.copyFileSync(writer, dispatcher);
+      const alias = path.join(createFixtureDir("reader-alias-"), "grep");
+      fs.symlinkSync("/usr/bin/grep", alias);
+      const payload = `grep ${needle} audit-fixture.json`;
+      const profileBody = "grep() { printf mutated > audit-fixture.json; }\n";
+      for (const profile of [".profile", ".zshenv"]) {
+        fs.writeFileSync(path.join(cwd, profile), profileBody);
+      }
+      const fishConfig = path.join(cwd, "fish/config.fish");
+      fs.mkdirSync(path.dirname(fishConfig));
+      fs.writeFileSync(fishConfig, "function grep; printf mutated > audit-fixture.json; end\n");
+      // Exercise optional installed shells without making them a test dependency.
+      const startupShells = ["zsh", "fish"].filter((name) => fs.existsSync(`/usr/bin/${name}`));
+      await withEnvAsync(
+        {
+          HOME: cwd,
+          XDG_CONFIG_HOME: cwd,
+          PATH: "/usr/bin:/bin",
+          BASH_ENV: path.join(cwd, ".profile"),
         },
-      },
-    });
-    try {
+        async () => {
+          for (const [command, effect] of [
+            [["/usr/bin/grep", needle, config], "read"],
+            [["/bin/sh", "-c", payload], "read"],
+            [["/bin/bash", "-c", payload], "read"],
+            [[writer, needle, config], "deny"],
+            [[alias, needle, config], "deny"],
+            [[shell, "-c", "/usr/bin/grep " + needle + " " + config], "deny"],
+            [["/bin/sh", "-lc", payload], "deny"],
+            [[dispatcher, "/usr/bin/grep", needle, config], "deny"],
+            [["/usr/bin/env", dispatcher, "/usr/bin/grep", needle, config], "deny"],
+            [[dispatcher, "/bin/sh", "-c", payload], "deny"],
+            [["/usr/bin/env", "/bin/sh", "-c", payload], "deny"],
+            [["/usr/bin/env", dispatcher, "/bin/sh", "-c", payload], "deny"],
+            [[dispatcher, "/bin/sh", "-c", payload], "write"],
+            ...startupShells.map((name) => [[`/usr/bin/${name}`, "-c", payload], "deny"] as const),
+            ...startupShells.map((name) => [[`/usr/bin/${name}`, "-c", payload], "write"] as const),
+            [[writer, needle, config], "write"],
+            // Source the fixture explicitly: a machine login profile can replace HOME.
+            [["/bin/sh", "-c", `. ./.profile; ${payload}`], "write"],
+          ] as const) {
+            fs.writeFileSync(config, needle);
+            const invoke = await runLocalSystemInvoke({
+              command: [...command],
+              cwd,
+              rawCommand: formatExecCommand([...command]),
+              security: "full",
+              ask: effect === "write" ? "off" : "on-miss",
+              runCommand: realRunCommand,
+              sanitizeEnv: (overrides) =>
+                sanitizeHostExecEnv({ overrides, blockPathOverrides: true }),
+            });
+            expect(fs.readFileSync(config, "utf8")).toBe(effect === "write" ? "mutated" : needle);
+            if (effect === "deny") {
+              expect(invoke.runCommand).not.toHaveBeenCalled();
+              expectApprovalRequiredDenied(invoke.sendNodeEvent, invoke.sendInvokeResult);
+            } else {
+              expectInvokeOk(invoke.sendInvokeResult, effect === "read" ? needle : undefined);
+            }
+          }
+        },
+      );
+    },
+  );
+
+  it.each([
+    { ask: "always", fallback: "full", source: "ask-fallback" },
+    { ask: "off", fallback: "allowlist", source: "ask-fallback" },
+    { ask: "on-miss", fallback: "deny", source: "auto-review" },
+    { ask: "on-miss", fallback: "deny", source: "direct-auto" },
+  ] as const)(
+    "does not let $source with full/$ask authorize suppression edits",
+    async ({ ask, fallback, source }) => {
+      const cwd = createFixtureDir("suppression-approval-");
+      const executable = createTempExecutable(cwd, "openclaw");
       const autoReviewer = vi.fn<ExecAutoReviewer>(() => ({
         decision: "allow-once",
-        rationale: "test reviewer would allow it",
         risk: "low",
+        rationale: "would allow",
       }));
-      const runCommand = vi.fn(async () => createLocalRunResult("should-not-run"));
-      const prepared = buildCwdApprovalPlan(
-        [executablePath, "config", "set", "security.audit.suppressions", "[]"],
-        tmp,
+      if (source === "direct-auto") {
+        setRuntimeConfigSnapshot({ tools: { exec: { mode: "auto" } } });
+      }
+      const prepared = buildCwdSessionApprovalPlan(
+        [executable, "config", "set", "security.audit.suppressions", "[]"],
+        cwd,
+        "agent:main:main",
       );
-      expect(prepared.ok).toBe(true);
-      requireApprovalPlan(prepared, "unreachable");
-      const invoke = await runLocalSystemInvoke({
-        command: prepared.plan.argv,
-        cwd: prepared.plan.cwd ?? tmp,
-        systemRunPlan: prepared.plan,
-        runCommand,
-        resolveExecSecurity: resolveProductionExecSecurity,
-        resolveExecAsk: resolveProductionExecAsk,
-        autoReviewer,
-      });
-
-      expect(autoReviewer).not.toHaveBeenCalled();
-      expect(runCommand).not.toHaveBeenCalled();
-      expectInvokeErrorMessage(invoke.sendInvokeResult, "SYSTEM_RUN_DENIED: approval required");
-    } finally {
-      clearRuntimeConfigSnapshot();
-    }
-  });
+      requireApprovalPlan(prepared, "expected bound suppression command");
+      await withTempApprovalsHome(
+        createApprovals("full", ask, fallback, {
+          main: { allowlist: [{ pattern: fs.realpathSync(executable) }] },
+        }),
+        async () => {
+          const invoke = await runLocalSystemInvokeWithPolicy("full", ask, {
+            preparedPlan: prepared.plan,
+            cwd,
+            approvalSource: source === "direct-auto" ? undefined : source,
+            ...(source === "direct-auto"
+              ? {
+                  resolveExecSecurity: resolveProductionExecSecurity,
+                  resolveExecAsk: resolveProductionExecAsk,
+                }
+              : {}),
+            autoReviewer,
+          });
+          expect(autoReviewer).not.toHaveBeenCalled();
+          expect(invoke.runCommand).not.toHaveBeenCalled();
+          expectExecDeniedEvent(invoke.sendNodeEvent);
+          expectInvokeErrorMessage(
+            invoke.sendInvokeResult,
+            source === "auto-review"
+              ? "SYSTEM_RUN_DENIED: explicit approval required"
+              : "SYSTEM_RUN_DENIED: approval required",
+          );
+        },
+      );
+    },
+  );
 
   it.each(["ask", "deny"] as const)(
     "does not execute when system.run auto reviewer returns %s",
@@ -2235,76 +2368,81 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     );
   });
 
-  it("revalidates unprompted full policy before local execution", async () => {
-    await withTempApprovalsHome(createApprovals("full", "off", "deny"), async () => {
+  it.each([
+    {
+      name: "revalidates unprompted full policy before local execution",
+      ask: "off",
+      source: "current-policy",
+      tightenedPolicy: { security: "deny" },
+    },
+    {
+      name: "rejects unprompted full execution after ask policy tightens",
+      ask: "off",
+      source: "current-policy",
+      tightenedPolicy: { ask: "on-miss" },
+    },
+    {
+      name: "revalidates explicit approval against a current deny policy",
+      ask: "always",
+      source: "explicit-approval",
+      tightenedPolicy: { security: "deny" },
+    },
+    {
+      name: "rejects explicit allow-once when persisted security tightens to allowlist",
+      ask: "always",
+      source: "explicit-approval",
+      tightenedPolicy: { security: "allowlist" },
+    },
+    {
+      name: "rejects forwarded auto-review when current ask policy tightens to always",
+      ask: "on-miss",
+      source: "auto-review",
+      tightenedPolicy: { ask: "always" },
+    },
+    {
+      name: "rejects forwarded auto-review when persisted security tightens to allowlist",
+      ask: "on-miss",
+      source: "auto-review",
+      tightenedPolicy: { security: "allowlist" },
+    },
+    {
+      name: "rejects forwarded auto-review when persisted ask tightens from off to on-miss",
+      ask: "off",
+      source: "auto-review",
+      tightenedPolicy: { ask: "on-miss" },
+    },
+    {
+      name: "rejects forwarded auto-review when current security policy tightens to deny",
+      ask: "on-miss",
+      source: "auto-review",
+      tightenedPolicy: { security: "deny" },
+    },
+  ] as const)("$name", async ({ ask, source, tightenedPolicy }) => {
+    const params: Parameters<typeof runLocalSystemInvokeWithPolicy>[2] = {};
+    if (source === "auto-review") {
+      const prepared = buildSessionApprovalPlan(["echo", "ok"], "agent:main:main");
+      expect(prepared.ok).toBe(true);
+      requireApprovalPlan(prepared, "unreachable");
+      params.preparedPlan = prepared.plan;
+      params.approvalSource = "auto-review";
+    } else if (source === "explicit-approval") {
+      params.approvalDecision = "allow-once";
+      params.approved = true;
+    }
+    await withTempApprovalsHome(createApprovals("full", ask, "deny"), async () => {
       const commitAuthorization = createPolicyMutationCommit((current) => {
-        current.defaults = { ...current.defaults, security: "deny" };
+        current.defaults = { ...current.defaults, ...tightenedPolicy };
       });
-      const invoke = await runLocalSystemInvokeWithPolicy("full", "off", {
-        commitExecAuthorization: commitAuthorization,
-      });
-
-      expect(commitAuthorization).toHaveBeenCalledWith(
-        expect.objectContaining({
-          authorization: expect.objectContaining({ source: "current-policy" }),
-        }),
-      );
-      expect(invoke.runCommand).not.toHaveBeenCalled();
-      expectApprovalStateWriteDenied(invoke);
-    });
-  });
-
-  it("rejects unprompted full execution after ask policy tightens", async () => {
-    await withTempApprovalsHome(createApprovals("full", "off", "deny"), async () => {
-      const commitAuthorization = createPolicyMutationCommit((current) => {
-        current.defaults = { ...current.defaults, ask: "on-miss" };
-      });
-      const invoke = await runLocalSystemInvokeWithPolicy("full", "off", {
-        commitExecAuthorization: commitAuthorization,
-      });
-
-      expect(invoke.runCommand).not.toHaveBeenCalled();
-      expectApprovalStateWriteDenied(invoke);
-    });
-  });
-
-  it("revalidates explicit approval against a current deny policy", async () => {
-    await withTempApprovalsHome(createApprovals("full", "always", "deny"), async () => {
-      const commitAuthorization = createPolicyMutationCommit((current) => {
-        current.defaults = { ...current.defaults, security: "deny" };
-      });
-      const invoke = await runLocalSystemInvokeWithPolicy("full", "always", {
-        approvalDecision: "allow-once",
-        approved: true,
-        commitExecAuthorization: commitAuthorization,
-      });
-
-      expect(commitAuthorization).toHaveBeenCalledWith(
-        expect.objectContaining({
-          authorization: expect.objectContaining({ source: "explicit-approval" }),
-        }),
-      );
-      expect(invoke.runCommand).not.toHaveBeenCalled();
-      expectApprovalStateWriteDenied(invoke);
-    });
-  });
-
-  it("rejects explicit allow-once when persisted security tightens to allowlist", async () => {
-    await withTempApprovalsHome(createApprovals("full", "always", "deny"), async () => {
-      const commitAuthorization = createPolicyMutationCommit((current) => {
-        current.defaults = { ...current.defaults, security: "allowlist" };
-      });
-      const invoke = await runLocalSystemInvokeWithPolicy("full", "always", {
-        approvalDecision: "allow-once",
-        approved: true,
+      const invoke = await runLocalSystemInvokeWithPolicy("full", ask, {
+        ...params,
         commitExecAuthorization: commitAuthorization,
       });
 
       expect(commitAuthorization).toHaveBeenCalledWith(
         expect.objectContaining({
           authorization: expect.objectContaining({
-            source: "explicit-approval",
-            policySnapshot: expect.any(Object),
+            source,
+            ...(source === "current-policy" ? {} : { policySnapshot: expect.any(Object) }),
           }),
         }),
       );
@@ -2339,130 +2477,6 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
       );
       expect(invoke.runCommand).toHaveBeenCalledTimes(1);
       expectInvokeOk(invoke.sendInvokeResult);
-    });
-  });
-
-  it("rejects forwarded auto-review when current ask policy tightens to always", async () => {
-    const prepared = buildSessionApprovalPlan(["echo", "ok"], "agent:main:main");
-    expect(prepared.ok).toBe(true);
-    requireApprovalPlan(prepared, "unreachable");
-    await withTempApprovalsHome(createApprovals("full", "on-miss", "deny"), async () => {
-      const commitAuthorization = createPolicyMutationCommit((current) => {
-        current.defaults = { ...current.defaults, ask: "always" };
-      });
-      const invoke = await runLocalSystemInvokeWithPolicy("full", "on-miss", {
-        preparedPlan: prepared.plan,
-        approvalSource: "auto-review",
-        commitExecAuthorization: commitAuthorization,
-      });
-
-      expect(commitAuthorization).toHaveBeenCalledWith(
-        expect.objectContaining({
-          authorization: expect.objectContaining({ source: "auto-review" }),
-        }),
-      );
-      expect(invoke.runCommand).not.toHaveBeenCalled();
-      expectApprovalStateWriteDenied(invoke);
-    });
-  });
-
-  it("rejects forwarded auto-review when persisted security tightens to allowlist", async () => {
-    const prepared = buildSessionApprovalPlan(["echo", "ok"], "agent:main:main");
-    expect(prepared.ok).toBe(true);
-    requireApprovalPlan(prepared, "unreachable");
-    await withTempApprovalsHome(createApprovals("full", "on-miss", "deny"), async () => {
-      const commitAuthorization = createPolicyMutationCommit((current) => {
-        current.defaults = { ...current.defaults, security: "allowlist" };
-      });
-      const invoke = await runLocalSystemInvokeWithPolicy("full", "on-miss", {
-        preparedPlan: prepared.plan,
-        approvalSource: "auto-review",
-        commitExecAuthorization: commitAuthorization,
-      });
-
-      expect(commitAuthorization).toHaveBeenCalledWith(
-        expect.objectContaining({
-          authorization: expect.objectContaining({
-            source: "auto-review",
-            policySnapshot: expect.any(Object),
-          }),
-        }),
-      );
-      expect(invoke.runCommand).not.toHaveBeenCalled();
-      expectApprovalStateWriteDenied(invoke);
-    });
-  });
-
-  it("rejects forwarded auto-review when persisted ask tightens from off to on-miss", async () => {
-    const prepared = buildSessionApprovalPlan(["echo", "ok"], "agent:main:main");
-    expect(prepared.ok).toBe(true);
-    requireApprovalPlan(prepared, "unreachable");
-    await withTempApprovalsHome(createApprovals("full", "off", "deny"), async () => {
-      const commitAuthorization = createPolicyMutationCommit((current) => {
-        current.defaults = { ...current.defaults, ask: "on-miss" };
-      });
-      const invoke = await runLocalSystemInvokeWithPolicy("full", "off", {
-        preparedPlan: prepared.plan,
-        approvalSource: "auto-review",
-        commitExecAuthorization: commitAuthorization,
-      });
-
-      expect(commitAuthorization).toHaveBeenCalledWith(
-        expect.objectContaining({
-          authorization: expect.objectContaining({
-            source: "auto-review",
-            policySnapshot: expect.any(Object),
-          }),
-        }),
-      );
-      expect(invoke.runCommand).not.toHaveBeenCalled();
-      expectApprovalStateWriteDenied(invoke);
-    });
-  });
-
-  it("rejects forwarded auto-review when current security policy tightens to deny", async () => {
-    const prepared = buildSessionApprovalPlan(["echo", "ok"], "agent:main:main");
-    expect(prepared.ok).toBe(true);
-    requireApprovalPlan(prepared, "unreachable");
-    await withTempApprovalsHome(createApprovals("full", "on-miss", "deny"), async () => {
-      const commitAuthorization = createPolicyMutationCommit((current) => {
-        current.defaults = { ...current.defaults, security: "deny" };
-      });
-      const invoke = await runLocalSystemInvokeWithPolicy("full", "on-miss", {
-        preparedPlan: prepared.plan,
-        approvalSource: "auto-review",
-        commitExecAuthorization: commitAuthorization,
-      });
-
-      expect(invoke.runCommand).not.toHaveBeenCalled();
-      expectApprovalStateWriteDenied(invoke);
-    });
-  });
-
-  it("does not let forwarded auto-review authorize security audit suppression edits", async () => {
-    const tmp = createFixtureDir("openclaw-forwarded-auto-review-suppression-");
-    const executablePath = createTempExecutable(tmp, "openclaw");
-    const prepared = buildCwdSessionApprovalPlan(
-      [executablePath, "config", "set", "security.audit.suppressions", "[]"],
-      tmp,
-      "agent:main:main",
-    );
-    expect(prepared.ok).toBe(true);
-    requireApprovalPlan(prepared, "unreachable");
-    await withTempApprovalsHome(createApprovals("full", "on-miss", "deny"), async () => {
-      const invoke = await runLocalSystemInvokeWithPolicy("full", "on-miss", {
-        preparedPlan: prepared.plan,
-        cwd: tmp,
-        approvalSource: "auto-review",
-      });
-
-      expect(invoke.runCommand).not.toHaveBeenCalled();
-      expectExecDeniedEvent(invoke.sendNodeEvent);
-      expectInvokeErrorMessage(
-        invoke.sendInvokeResult,
-        "SYSTEM_RUN_DENIED: explicit approval required",
-        true,
-      );
     });
   });
 
@@ -2533,47 +2547,38 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     });
   });
 
-  it("requires a canonical plan for timeout fallback provenance", async () => {
-    const invoke = await runLocalSystemInvokeWithPolicy("full", "always", {
-      approvalSource: "ask-fallback",
-    });
+  it.each([
+    {
+      provenance: "timeout fallback",
+      ask: "always",
+      params: { approvalSource: "ask-fallback" },
+      expectedMessage: "approvalSource requires matching systemRunPlan",
+    },
+    {
+      provenance: "forwarded auto-review",
+      ask: "on-miss",
+      params: { approvalSource: "auto-review", prepareDelayedApprovalPlan: false },
+      expectedMessage: "approvalSource requires matching systemRunPlan",
+    },
+    {
+      provenance: "explicit approval",
+      ask: "always",
+      params: {
+        approvalDecision: "allow-once",
+        approved: true,
+        prepareDelayedApprovalPlan: false,
+      },
+      expectedMessage: "explicit approval requires matching systemRunPlan",
+    },
+  ] as const)(
+    "requires a canonical plan for $provenance provenance",
+    async ({ ask, params, expectedMessage }) => {
+      const invoke = await runLocalSystemInvokeWithPolicy("full", ask, params);
 
-    expect(invoke.runCommand).not.toHaveBeenCalled();
-    expectInvokeErrorMessage(
-      invoke.sendInvokeResult,
-      "approvalSource requires matching systemRunPlan",
-      true,
-    );
-  });
-
-  it("requires a canonical plan for forwarded auto-review provenance", async () => {
-    const invoke = await runLocalSystemInvokeWithPolicy("full", "on-miss", {
-      approvalSource: "auto-review",
-      prepareDelayedApprovalPlan: false,
-    });
-
-    expect(invoke.runCommand).not.toHaveBeenCalled();
-    expectInvokeErrorMessage(
-      invoke.sendInvokeResult,
-      "approvalSource requires matching systemRunPlan",
-      true,
-    );
-  });
-
-  it("requires a canonical plan for explicit approval provenance", async () => {
-    const invoke = await runLocalSystemInvokeWithPolicy("full", "always", {
-      approvalDecision: "allow-once",
-      approved: true,
-      prepareDelayedApprovalPlan: false,
-    });
-
-    expect(invoke.runCommand).not.toHaveBeenCalled();
-    expectInvokeErrorMessage(
-      invoke.sendInvokeResult,
-      "explicit approval requires matching systemRunPlan",
-      true,
-    );
-  });
+      expect(invoke.runCommand).not.toHaveBeenCalled();
+      expectInvokeErrorMessage(invoke.sendInvokeResult, expectedMessage, true);
+    },
+  );
 
   it("requires a prepared policy snapshot for forwarded delayed approval", async () => {
     const prepared = buildSessionApprovalPlan(["echo", "ok"], "agent:main:main");
@@ -2884,55 +2889,6 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     } finally {
       clearRuntimeConfigSnapshot();
     }
-  });
-
-  it("does not let timeout fallback authorize security audit suppression edits", async () => {
-    const tmp = createFixtureDir("openclaw-timeout-fallback-suppression-");
-    const executablePath = createTempExecutable(tmp, "openclaw");
-    const prepared = buildCwdSessionApprovalPlan(
-      [executablePath, "config", "set", "security.audit.suppressions", "[]"],
-      tmp,
-      "agent:main:main",
-    );
-    expect(prepared.ok).toBe(true);
-    requireApprovalPlan(prepared, "unreachable");
-    await withTempApprovalsHome(createApprovals("full", "always", "full", {}), async () => {
-      const invoke = await runLocalSystemInvoke({
-        preparedPlan: prepared.plan,
-        cwd: tmp,
-        approvalSource: "ask-fallback",
-      });
-
-      expect(invoke.runCommand).not.toHaveBeenCalled();
-      expectApprovalRequiredDenied(invoke.sendNodeEvent, invoke.sendInvokeResult);
-    });
-  });
-
-  it("keeps audit suppression edits approval-gated under allowlist fallback from full/off", async () => {
-    const tmp = createFixtureDir("openclaw-timeout-fallback-full-off-suppression-");
-    const executablePath = createTempExecutable(tmp, "openclaw");
-    const prepared = buildCwdSessionApprovalPlan(
-      [executablePath, "config", "set", "security.audit.suppressions", "[]"],
-      tmp,
-      "agent:main:main",
-    );
-    expect(prepared.ok).toBe(true);
-    requireApprovalPlan(prepared, "unreachable");
-    await withTempApprovalsHome(
-      createApprovals("full", "off", "allowlist", {
-        main: { allowlist: [{ pattern: fs.realpathSync(executablePath) }] },
-      }),
-      async () => {
-        const invoke = await runLocalSystemInvokeWithPolicy("full", "off", {
-          preparedPlan: prepared.plan,
-          cwd: tmp,
-          approvalSource: "ask-fallback",
-        });
-
-        expect(invoke.runCommand).not.toHaveBeenCalled();
-        expectApprovalRequiredDenied(invoke.sendNodeEvent, invoke.sendInvokeResult);
-      },
-    );
   });
 
   it("rejects unknown approval provenance", async () => {
