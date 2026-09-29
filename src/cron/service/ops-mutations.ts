@@ -13,7 +13,7 @@ import {
   requestActiveCronJobCancellation,
 } from "../active-jobs.js";
 import { describeUnavailableCronAgent } from "../agent-availability.js";
-import { resolveCronJobEffectiveAgentId } from "../agent-id.js";
+import { resolveCronJobEffectiveAgentId, tryResolveCronJobEffectiveAgentId } from "../agent-id.js";
 import { resolveCronJobConfigRevision } from "../config-revision.js";
 import { withCronMutationCommitHook } from "../mutation-completion.js";
 import { normalizeCronRunJobId } from "../run-history.js";
@@ -117,6 +117,10 @@ async function persistUpdatedJob(params: {
   ownerHooks?: CronStoreTransactionHooks;
 }) {
   const { state, snapshot, previousJob, nextJob, persistStore } = params;
+  const defaultAgentId = resolveCurrentDefaultAgentId(state);
+  // Declaration convergence also refuses unresolved legacy ownership before publishing.
+  resolveCronJobEffectiveAgentId(previousJob, defaultAgentId, state.deps.legacyDefaultAgentId);
+  resolveCronJobEffectiveAgentId(nextJob, defaultAgentId, state.deps.legacyDefaultAgentId);
   const reservation = state.queuedRunReservationsByJobId.get(nextJob.id);
   const preservesOnExitRearm =
     reservation?.onExit === true &&
@@ -306,7 +310,7 @@ export async function add(
       parseAgentSessionKey(normalizeOptionalString(normalizedInput.sessionKey))?.agentId;
     const retainedLegacyAgentId = normalizeOptionalAgentId(state.deps.legacyDefaultAgentId);
     const creationInput =
-      !explicitOwnerAgentId && retainedLegacyAgentId === agentId
+      !explicitOwnerAgentId && retainedLegacyAgentId
         ? { ...normalizedInput, agentId }
         : normalizedInput;
     const snapshot = snapshotStoreForRollback(state);
@@ -541,6 +545,11 @@ export async function remove(
     if (isSystemMonitorDeclaration(removedJob.declarationKey) && opts?.systemOwned !== true) {
       throw new Error("system-owned monitor jobs cannot be removed by cron clients");
     }
+    const agentId = resolveCronJobEffectiveAgentId(
+      removedJob,
+      resolveCurrentDefaultAgentId(state),
+      state.deps.legacyDefaultAgentId,
+    );
     const persistStore = opts?.commitGuard ? persistNativeOrRestore : persistOrRestore;
     opts?.commitGuard?.();
     const snapshot = snapshotStoreForRollback(state);
@@ -558,7 +567,6 @@ export async function remove(
     });
     const activeMarker = noteActiveCronJobRemoval(id, opts?.commitGuard);
     const activeRunCancellationRequested = activeMarker?.cancellation?.kind === "requested";
-    const agentId = resolveCronJobEffectiveAgentId(removedJob, resolveCurrentDefaultAgentId(state));
     const sessionStorePath =
       state.deps.resolveSessionStorePath?.(agentId) ?? state.deps.sessionStorePath;
     if (
@@ -641,19 +649,20 @@ export async function removeAgentJobsTransactional<T>(
     }
     const defaultAgentId = resolveCurrentDefaultAgentId(state);
     const removedJobs = state.store.jobs.filter(
-      (job) => resolveCronJobEffectiveAgentId(job, defaultAgentId) === id,
+      (job) =>
+        tryResolveCronJobEffectiveAgentId(job, defaultAgentId, state.deps.legacyDefaultAgentId) ===
+        id,
     );
     if (removedJobs.length === 0) {
       return await commit();
     }
     const snapshot = snapshotStoreForRollback(state);
-    state.store.jobs = state.store.jobs.filter(
-      (job) => resolveCronJobEffectiveAgentId(job, defaultAgentId) !== id,
-    );
+    const removedJobIds = new Set(removedJobs.map((job) => job.id));
+    state.store.jobs = state.store.jobs.filter((job) => !removedJobIds.has(job.id));
     const postPersistNotifications: DeferredCronNotifications = [];
     recomputeNextRunsForMaintenance(state, { deferredNotifications: postPersistNotifications });
-    // Cron is durable first, but notifications stay speculative until the roster commits.
-    await persistOrRestore(state, snapshot);
+    // Cron is durable first; scratch cleanup and notifications wait for the roster outcome.
+    await persistOrRestore(state, snapshot, { preserveRemovedJobScratch: true });
     let result: T;
     try {
       result = await commit();

@@ -1,4 +1,5 @@
 import { parseAbsoluteTimeMs } from "../parse.js";
+import { hasCanonicalCronDeliveryMode } from "../store/delivery-codec.js";
 import type { CronJob } from "../types.js";
 import {
   computeJobPreviousRunAtOrBeforeMs,
@@ -71,7 +72,11 @@ export function isRunnableJob(params: {
   if (!job.state) {
     job.state = {};
   }
-  if (!isJobEnabled(job) || !isTimeScheduledJob(job)) {
+  if (
+    !isJobEnabled(job) ||
+    !hasCanonicalCronDeliveryMode(job.delivery) ||
+    !isTimeScheduledJob(job)
+  ) {
     return false;
   }
   if (hasActiveCronRun(job)) {

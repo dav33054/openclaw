@@ -8,6 +8,7 @@ import { isCronJobActive } from "../active-jobs.js";
 import { coerceFiniteScheduleNumber } from "../schedule-number.js";
 import { computeNextRunAtMs, computePreviousRunAtMs } from "../schedule.js";
 import { resolveCronStaggerMs } from "../stagger.js";
+import { hasCanonicalCronDeliveryMode } from "../store/delivery-codec.js";
 import { CRON_STUCK_RUN_MS } from "../store/run-receipt-store.js";
 import type { CronScheduleMaintenanceOptions } from "../store/runtime-worker.types.js";
 import { createCronStreamSourceIdentity, resolveCronStreamBatching } from "../stream-schedule.js";
@@ -434,22 +435,6 @@ function normalizeJobTickState(params: {
     changed = true;
   }
 
-  if (job.schedule.kind === "every" && !hasInvalidExplicitEveryAnchor(job.schedule)) {
-    const normalizedAnchorMs = resolveEveryAnchorMs({
-      schedule: job.schedule,
-      fallbackAnchorMs: isFiniteTimestamp(job.createdAtMs) ? job.createdAtMs : nowMs,
-    });
-    if (job.schedule.anchorMs !== normalizedAnchorMs) {
-      job.schedule = {
-        ...job.schedule,
-        anchorMs: normalizedAnchorMs,
-      };
-      job.state.pacedNextRunAtMs = undefined;
-      job.state.forcePreservedNextRunAtMs = undefined;
-      changed = true;
-    }
-  }
-
   // Event schedules cannot retain a timed slot, including one preserved by a force run.
   if (!isJobEnabled(job) || !isTimeScheduledJob(job)) {
     for (const key of TIME_SCHEDULE_STATE_FIELDS) {
@@ -709,7 +694,12 @@ export function summarizeCronJobSchedule(state: CronServiceState) {
     if (rawEnabled) {
       enabledCount += 1;
     }
-    if ((rawEnabled ?? true) && isTimeScheduledJob(job) && hasNextRun) {
+    if (
+      (rawEnabled ?? true) &&
+      hasCanonicalCronDeliveryMode(job.delivery) &&
+      isTimeScheduledJob(job) &&
+      hasNextRun
+    ) {
       nextWake = nextWake === undefined ? nextRun : Math.min(nextWake, nextRun);
     }
   }

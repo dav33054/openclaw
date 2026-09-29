@@ -1,5 +1,6 @@
 // Doctor cron storage repair mechanics for legacy stores, run logs, payloads, and Codex refs.
 import type { DatabaseSync } from "node:sqlite";
+import { isDeepStrictEqual } from "node:util";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   normalizeOptionalString,
@@ -22,6 +23,10 @@ import {
   type CronQuarantinedJob,
   type QuarantinedCronConfigJob,
 } from "../../../cron/store.js";
+import { inspectCronOwnerRowsForDoctor } from "../../../cron/store/doctor-inventory.js";
+import { inspectCronJobOwnersForDoctor } from "../../../cron/store/doctor.js";
+import { cronStoreKey } from "../../../cron/store/key.js";
+import { fingerprintCronJobRows } from "../../../cron/store/row-codec.js";
 import type { CronJob } from "../../../cron/types.js";
 import { formatErrorMessage as errorMessage } from "../../../infra/errors.js";
 import { markLegacyMigrationSourceRemoved } from "../../../infra/state-migrations.receipts.js";
@@ -63,6 +68,7 @@ import {
   rethrowSqliteSchemaVersionError,
 } from "./schema-safety.js";
 import {
+  canRepairCronDeliveryForDoctor,
   collectStoredCronCodexRuntimePolicyTargets,
   cronCodexRuntimePolicyTargetKey,
   normalizeStoredCronJobs,
@@ -88,6 +94,7 @@ export type LegacyCronRepairState = {
   projectedOwnersByJobId: ReadonlyMap<string, CronOwnerProjection>;
   rawJobs: Array<Record<string, unknown>>;
   jobsFingerprint: string | undefined;
+  ownerRows: Awaited<ReturnType<typeof inspectCronJobOwnersForDoctor>>;
 };
 
 export type LegacyCronRepairResult = {
@@ -162,6 +169,27 @@ export async function loadLegacyCronRepairState(params: {
   const projectedOwnersByJobId = new Map(
     loaded.store.jobs.map((job) => [job.id, projectCronOwner(job, runtimeDefaultAgentId)]),
   );
+  const ownerRows = await inspectCronJobOwnersForDoctor(
+    { env: params.env ?? process.env },
+    storePath,
+  );
+  if (
+    loaded.jobsFingerprint !== undefined &&
+    fingerprintCronJobRows(ownerRows) !== loaded.jobsFingerprint
+  ) {
+    throw new CronJobsStoreChangedError(storePath);
+  }
+  const sqlOwners = new Map(
+    ownerRows.flatMap((row) => {
+      const agentId = normalizeOptionalString(row.agent_id);
+      return agentId ? [[row.job_id, agentId] as const] : [];
+    }),
+  );
+  for (const [jobId, agentId] of sqlOwners) {
+    if (projectedOwnersByJobId.get(jobId)?.kind !== "explicit") {
+      projectedOwnersByJobId.set(jobId, { kind: "explicit", agentId });
+    }
+  }
   const invalidConfigRows: QuarantinedCronConfigJob[] = [...loaded.invalidConfigRows];
   const currentJobs =
     loaded.configJobs.length > 0
@@ -172,6 +200,17 @@ export async function loadLegacyCronRepairState(params: {
           }),
         )
       : (loaded.store.jobs as unknown as Array<Record<string, unknown>>);
+  for (const job of currentJobs) {
+    const jobId = normalizeOptionalString(job.id) ?? normalizeOptionalString(job.jobId);
+    const sqlOwner = jobId ? sqlOwners.get(jobId) : undefined;
+    if (
+      sqlOwner &&
+      canRepairCronDeliveryForDoctor(job.delivery) &&
+      projectCronOwner(job, undefined).kind === "unresolved"
+    ) {
+      job.agentId = sqlOwner;
+    }
+  }
   let rawJobs = currentJobs;
   let legacyImportCount = 0;
   let legacyMigrationSource: LegacyCronMigrationSource | undefined;
@@ -208,6 +247,7 @@ export async function loadLegacyCronRepairState(params: {
     projectedOwnersByJobId,
     rawJobs,
     jobsFingerprint: loaded.jobsFingerprint,
+    ownerRows,
   };
 }
 
@@ -285,17 +325,26 @@ export async function applyLegacyCronStoreRepair(params: {
         `Cron trigger script for ${job} uses legacy Code Mode APIs that cannot be safely converted; inspect the automation and update its trigger script manually to use direct tool calls.`,
     ),
   );
+  warnings.push(
+    ...normalized.unsupportedDeliveryModeJobs.map(
+      (job) =>
+        `Cron job ${job} has an unsupported delivery mode. Review its intended delivery and set mode to "none", "announce", or "webhook"; Doctor cannot infer the intended route.`,
+    ),
+  );
   const legacyWebhook = normalizeOptionalString(
     (params.cfg.cron as Record<string, unknown> | undefined)?.webhook,
   );
   const notifyMigration = migrateLegacyNotifyFallback({
-    jobs: state.rawJobs,
+    jobs: state.rawJobs.filter((job) => canRepairCronDeliveryForDoctor(job.delivery)),
     legacyWebhook,
   });
   warnings.push(...notifyMigration.warnings);
   const retirementChanges: string[] = [];
   if (resolveRetired) {
     for (const job of state.rawJobs) {
+      if (!canRepairCronDeliveryForDoctor(job.delivery)) {
+        continue;
+      }
       const payload = asOptionalRecord(job.payload);
       const jobId = normalizeOptionalStringifiedId(job.id);
       if (!payload || !jobId) {
@@ -374,6 +423,14 @@ export async function applyLegacyCronStoreRepair(params: {
         } as const;
         const migrationSource = state.legacyMigrationSource;
         const assertSnapshotCurrent = (db: DatabaseSync): undefined => {
+          if (
+            !isDeepStrictEqual(
+              inspectCronOwnerRowsForDoctor(db, cronStoreKey(state.storePath)),
+              state.ownerRows,
+            )
+          ) {
+            throw new CronJobsStoreChangedError(state.storePath);
+          }
           if (state.jobsFingerprint !== undefined) {
             assertCronJobsStoreUnchanged(db, state.storePath, state.jobsFingerprint);
           }

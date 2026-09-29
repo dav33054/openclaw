@@ -1,3 +1,4 @@
+import { hasCanonicalCronDeliveryMode } from "../cron/store/delivery-codec.js";
 import type { CronJob } from "../cron/types.js";
 import type { GatewayScheduledJob, GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { markOpenClawExecEnv } from "../infra/openclaw-exec-env.js";
@@ -65,7 +66,9 @@ function scopeKey(jobId: string): string {
 }
 
 function isWatchableExitJob(job: CronJob): job is OnExitCronJob {
-  return job.enabled && job.schedule.kind === "on-exit";
+  return (
+    job.enabled && hasCanonicalCronDeliveryMode(job.delivery) && job.schedule.kind === "on-exit"
+  );
 }
 
 export function createCronExitWatchers(
