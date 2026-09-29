@@ -121,7 +121,7 @@ describe("RealtimeTalkSession consult handoff", () => {
     await vi.waitFor(() => expect(flushTranscriptWrites).toHaveBeenCalledOnce());
 
     controller.abort();
-    flushPending.resolve();
+    flushPending.resolve(undefined);
     await consult;
 
     expect(request).not.toHaveBeenCalled();
@@ -483,7 +483,7 @@ describe("RealtimeTalkSession consult handoff", () => {
 
     const waitCalls = request.mock.calls.filter((call) => call[0] === "agent.wait");
     expect(waitCalls.length).toBeGreaterThanOrEqual(1);
-    expect(waitCalls[0][1]!["runId" as keyof object]).toBe("run-1");
+    expect((waitCalls[0]![1] as { runId?: string }).runId).toBe("run-1");
     expect(submit).toHaveBeenCalledTimes(1);
     expect(submit).toHaveBeenCalledWith("call-1", {
       result: "The source reply still wins.",
@@ -616,13 +616,10 @@ describe("RealtimeTalkSession consult handoff", () => {
       await vi.advanceTimersByTimeAsync(1);
       await consult;
 
-      expect(request).toHaveBeenCalledWith(
-        "agent.wait",
-        {
-          runId: "run-1",
-          timeoutMs: 120_000,
-        },
-      );
+      expect(request).toHaveBeenCalledWith("agent.wait", {
+        runId: "run-1",
+        timeoutMs: 120_000,
+      });
       expect(submit).toHaveBeenCalledWith("call-1", {
         result: "OpenClaw finished with no text.",
       });
