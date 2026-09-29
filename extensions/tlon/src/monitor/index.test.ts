@@ -693,11 +693,14 @@ describe("monitorTlonProvider production-path sender authentication", () => {
       );
     } finally {
       controller.abort();
-      if (monitor) {
-        await monitor;
+      try {
+        if (monitor) {
+          await monitor;
+        }
+      } finally {
+        realUrbitFixture.client = null;
+        closeOpenClawStateDatabaseForTest();
       }
-      realUrbitFixture.client = null;
-      closeOpenClawStateDatabaseForTest();
     }
   });
 });
