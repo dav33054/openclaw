@@ -23,6 +23,30 @@ Matrix reply streaming is opt-in. `streaming.mode` controls how OpenClaw deliver
 }
 ```
 
+To change the mode for selected rooms, set `channels.matrix.streaming.rooms.<roomId>.mode`. Other rooms keep the channel or account mode:
+
+```json5
+{
+  channels: {
+    matrix: {
+      streaming: {
+        mode: "progress",
+        rooms: {
+          "!quiet:example.org": { mode: "off" },
+          "!live:example.org": { mode: "partial" },
+        },
+      },
+    },
+  },
+}
+```
+
+This overrides only the mode; `streaming.progress`, `streaming.preview`, and `streaming.block` still come from the channel or account. Overrides use exact, case-sensitive room IDs for both group rooms and DMs. Account-level `streaming.rooms` entries override channel entries for the same room. These delivery settings do not admit rooms or replace wildcard tool restrictions: configure room access separately in `groups` or `rooms`.
+
+An account's `streaming` object without its own `rooms` map retains the existing replacement behavior: it replaces channel streaming defaults, and an omitted mode stays `off`. An account that supplies `streaming.rooms` inherits unspecified channel streaming defaults, so a room-only override retains the channel mode elsewhere. Channel room entries apply in either case, with account room entries taking precedence.
+
+Channel and account streaming settings use the same validation. Doctor and the updater recognize an account's previously accepted unsupported streaming values. Run `openclaw doctor --fix` to repair them with the normal configuration backup: supported nested settings and literal room overrides are retained, unknown or invalid leaves and wildcard/alias streaming keys are removed, and a missing or invalid account mode in a repaired object keeps its prior `off` fallback. Valid account streaming objects are not rewritten. Access-policy wildcards in `groups` or `rooms` are separate and remain unchanged. Run `openclaw config validate` before restarting the gateway. To assign an override removed during repair, add the intended literal room ID under `streaming.rooms` with `off`, `partial`, `quiet`, or `progress`.
+
 To keep live answer previews but hide interim tool/progress lines:
 
 ```json5
