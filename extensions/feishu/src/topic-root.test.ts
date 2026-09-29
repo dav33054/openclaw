@@ -99,4 +99,12 @@ describe("resolveFeishuReplyAnchorMessageId", () => {
       },
     });
   });
+
+  it("keeps the topic id when the lookup fails so the send owner still refuses a top-level post", async () => {
+    mockListMessages.mockResolvedValue({ code: 99_991, msg: "invalid container" });
+
+    await expect(
+      resolveFeishuReplyAnchorMessageId({ cfg, threadId: "omt_unresolved" }),
+    ).resolves.toBe("omt_unresolved");
+  });
 });

@@ -504,6 +504,10 @@ export async function resolveFeishuTopicRootMessageId(params: {
  *
  * A Feishu reply addresses a message, so a target that names a topic (`omt_…`) needs the topic's
  * root message; a target that already names a message is returned unchanged and costs no lookup.
+ *
+ * A failed lookup keeps the topic id instead of clearing the target: send owners already refuse
+ * to fall back to a top-level post after a threaded reply fails, and dropping the target here
+ * would silently post a new top-level message in a topic chat.
  */
 export async function resolveFeishuReplyAnchorMessageId(params: {
   cfg: ClawdbotConfig;
@@ -511,17 +515,16 @@ export async function resolveFeishuReplyAnchorMessageId(params: {
   accountId?: string;
 }): Promise<string | undefined> {
   const threadId = params.threadId?.trim();
-  if (!threadId) {
-    return undefined;
-  }
-  if (!isFeishuTopicId(threadId)) {
+  if (!threadId || !isFeishuTopicId(threadId)) {
     return threadId;
   }
-  return await resolveFeishuTopicRootMessageId({
-    cfg: params.cfg,
-    topicId: threadId,
-    accountId: params.accountId,
-  });
+  return (
+    (await resolveFeishuTopicRootMessageId({
+      cfg: params.cfg,
+      topicId: threadId,
+      accountId: params.accountId,
+    })) ?? threadId
+  );
 }
 
 function isFeishuTopicId(value: string): boolean {
