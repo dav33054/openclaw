@@ -753,6 +753,22 @@ describe("buildChildCompletionFindings", () => {
 
 describe("applySubagentWaitOutcome", () => {
   it.each([
+    { endedAt: undefined, prior: undefined, expected: "still-running" },
+    { endedAt: 150, prior: undefined, expected: "exited" },
+    { endedAt: undefined, prior: "exited", expected: "exited" },
+    { endedAt: undefined, prior: "killed", expected: "killed" },
+  ] as const)(
+    "preserves stop evidence (endedAt=$endedAt, prior=$prior)",
+    ({ endedAt, prior, expected }) => {
+      const applied = applySubagentWaitOutcome({
+        wait: { status: "timeout", endedAt },
+        outcome: prior ? { status: "timeout", disposition: prior } : undefined,
+      });
+      expect(applied.outcome).toMatchObject({ status: "timeout", disposition: expected });
+    },
+  );
+
+  it.each([
     {
       name: "treats blocked ok waits as errors",
       wait: {
@@ -768,6 +784,8 @@ describe("applySubagentWaitOutcome", () => {
       expected: { status: "error", error: "Agent run ended before producing a complete result." },
     },
     {
+      // A provider hard timeout is the run's own budget firing, so unlike a bare
+      // wait timeout it does prove the child stopped.
       name: "keeps provider hard timeouts stronger than blocked metadata",
       wait: {
         status: "error",
@@ -776,12 +794,12 @@ describe("applySubagentWaitOutcome", () => {
         providerStarted: true,
         error: "model timed out",
       },
-      expected: { status: "timeout" },
+      expected: { status: "timeout", disposition: "exited" },
     },
     ...(["rpc", "superseded"] as const).map((stopReason) => ({
       name: `keeps explicit ${stopReason} cancellation distinct from timeouts`,
       wait: { status: "timeout", stopReason },
-      expected: { status: "error", error: "subagent run terminated" },
+      expected: { status: "error", error: "subagent run terminated", disposition: "killed" },
     })),
     // Explicit cancellation must outrank blocked liveness (openclaw#125407).
     ...(["restart", "aborted"] as const).map((stopReason) => ({
@@ -792,7 +810,7 @@ describe("applySubagentWaitOutcome", () => {
         livenessState: "blocked",
         error: "Context overflow: prompt too large for the model.",
       },
-      expected: { status: "error", error: "subagent run terminated" },
+      expected: { status: "error", error: "subagent run terminated", disposition: "killed" },
     })),
     {
       name: "keeps the failure cause on pending-error timeout waits",
@@ -801,12 +819,16 @@ describe("applySubagentWaitOutcome", () => {
         pendingError: true,
         error: "model returned an unrecoverable tool-call sequence",
       },
-      expected: { status: "timeout", error: "model returned an unrecoverable tool-call sequence" },
+      expected: {
+        status: "timeout",
+        error: "model returned an unrecoverable tool-call sequence",
+        disposition: "exited",
+      },
     },
     {
       name: "ignores error text when the run did not end in a pending error",
       wait: { status: "timeout", error: "waited too long" },
-      expected: { status: "timeout" },
+      expected: { status: "timeout", disposition: "exited" },
     },
   ])("$name", ({ wait, expected }) => {
     const applied = applySubagentWaitOutcome({
