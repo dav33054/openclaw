@@ -1121,9 +1121,22 @@ public struct AgentsFilesSetResult: Codable, Sendable {
     }
 }
 
-public struct AgentsListParams: Codable, Sendable {}
+public struct AgentsListParams: Codable, Sendable {
+    public let includesessionplacement: Bool?
+
+    public init(
+        includesessionplacement: Bool? = nil)
+    {
+        self.includesessionplacement = includesessionplacement
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case includesessionplacement = "includeSessionPlacement"
+    }
+}
 
 public struct AgentsListResult: Codable, Sendable {
+    public let sessionplacement: [String: AnyCodable]?
     public let defaultid: String
     public let ownership: AnyCodable?
     public let selectionrequired: Bool?
@@ -1132,6 +1145,7 @@ public struct AgentsListResult: Codable, Sendable {
     public let agents: [AgentSummary]
 
     public init(
+        sessionplacement: [String: AnyCodable]? = nil,
         defaultid: String,
         ownership: AnyCodable? = nil,
         selectionrequired: Bool? = nil,
@@ -1139,6 +1153,7 @@ public struct AgentsListResult: Codable, Sendable {
         scope: AnyCodable,
         agents: [AgentSummary])
     {
+        self.sessionplacement = sessionplacement
         self.defaultid = defaultid
         self.ownership = ownership
         self.selectionrequired = selectionrequired
@@ -1148,6 +1163,7 @@ public struct AgentsListResult: Codable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
+        case sessionplacement = "sessionPlacement"
         case defaultid = "defaultId"
         case ownership
         case selectionrequired = "selectionRequired"
@@ -7047,21 +7063,25 @@ public struct EnvironmentsListParams: Codable, Sendable {
 }
 
 public struct EnvironmentsListResult: Codable, Sendable {
+    public let requiredprofile: String?
     public let environments: [EnvironmentSummary]
     public let profiles: [[String: AnyCodable]]?
     public let preparedpool: [String: AnyCodable]?
 
     public init(
+        requiredprofile: String? = nil,
         environments: [EnvironmentSummary],
         profiles: [[String: AnyCodable]]? = nil,
         preparedpool: [String: AnyCodable]? = nil)
     {
+        self.requiredprofile = requiredprofile
         self.environments = environments
         self.profiles = profiles
         self.preparedpool = preparedpool
     }
 
     private enum CodingKeys: String, CodingKey {
+        case requiredprofile = "requiredProfile"
         case environments
         case profiles
         case preparedpool = "preparedPool"
