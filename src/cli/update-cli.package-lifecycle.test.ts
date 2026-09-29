@@ -581,21 +581,18 @@ describe("update-cli", () => {
       // oxlint-disable-next-line typescript/unbound-method -- Called below with the intercepted Root receiver to preserve its path and mutation authority.
       const copy = prototype.copyIn;
       let injections = 0;
-      const copySpy = vi.spyOn(prototype, "copyIn").mockImplementation(async function (
-        this: Root,
-        destination,
-        source,
-        options,
-      ) {
-        if (source === stagedShim) {
-          injections += 1;
-          expect(
-            JSON.parse(await fs.readFile(path.join(pkgRoot, "package.json"), "utf8")).version,
-          ).toBe("2026.8.1");
-          throw new Error("staged shim copy failed");
-        }
-        await copy.call(this, destination, source, options);
-      });
+      const copySpy = vi
+        .spyOn(prototype, "copyIn")
+        .mockImplementation(async function (this: Root, destination, source, options) {
+          if (source === stagedShim) {
+            injections += 1;
+            expect(
+              JSON.parse(await fs.readFile(path.join(pkgRoot, "package.json"), "utf8")).version,
+            ).toBe("2026.8.1");
+            throw new Error("staged shim copy failed");
+          }
+          await copy.call(this, destination, source, options);
+        });
       readPackageVersion.mockResolvedValue("2026.7.1");
       primeNpmChannelTag("latest", "2026.8.1");
       mockNpmGlobalCommands(nodeModules, async (argv) => {

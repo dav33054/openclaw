@@ -169,11 +169,11 @@ describe("cross-region Home composer ownership", () => {
         container,
       );
       const readers: FileReader[] = [];
-      const read = vi.spyOn(FileReader.prototype, "readAsDataURL").mockImplementation(function (
-        this: FileReader,
-      ) {
-        readers.push(this);
-      });
+      const read = vi
+        .spyOn(FileReader.prototype, "readAsDataURL")
+        .mockImplementation(function (this: FileReader) {
+          readers.push(this);
+        });
       disposals.push(() => {
         read.mockRestore();
         render(nothing, container);

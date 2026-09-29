@@ -4321,22 +4321,20 @@ describe("repairMissingConfiguredPluginInstalls", () => {
       const prototype = Object.getPrototypeOf(await fsSafeRoot(extensionsDir)) as Root;
       // oxlint-disable-next-line typescript/unbound-method -- Retain the intercepted Root receiver below.
       const remove = prototype.remove;
-      const removeSpy = vi.spyOn(prototype, "remove").mockImplementation(async function (
-        this: Root,
-        target,
-        options,
-      ) {
-        if (
-          normalizeComparablePath(path.join(this.rootReal, target)) ===
-          normalizeComparablePath(linked ? installDir : oldPayload)
-        ) {
-          effects.push("retire");
-          if (phase === "cleanup-failure") {
-            throw failure;
+      const removeSpy = vi
+        .spyOn(prototype, "remove")
+        .mockImplementation(async function (this: Root, target, options) {
+          if (
+            normalizeComparablePath(path.join(this.rootReal, target)) ===
+            normalizeComparablePath(linked ? installDir : oldPayload)
+          ) {
+            effects.push("retire");
+            if (phase === "cleanup-failure") {
+              throw failure;
+            }
           }
-        }
-        await remove.call(this, target, options);
-      });
+          await remove.call(this, target, options);
+        });
       const onWarning = vi.fn();
       try {
         const { repairMissingConfiguredPluginInstalls } =

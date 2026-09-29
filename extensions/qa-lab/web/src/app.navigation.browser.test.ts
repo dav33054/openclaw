@@ -65,29 +65,33 @@ describe("QA Lab tab navigation retention", () => {
       .mockImplementation(function (this: Element) {
         return root.contains(this) && this.matches("nav.tab-bar") ? width(this) : 0;
       });
-    const scrollGet = vi.spyOn(Element.prototype, "scrollLeft", "get").mockImplementation(function (
-      this: Element,
-    ) {
-      return offsets.get(this) ?? 0;
-    });
+    const scrollGet = vi
+      .spyOn(Element.prototype, "scrollLeft", "get")
+      .mockImplementation(function (this: Element) {
+        return offsets.get(this) ?? 0;
+      });
     const scrollSet = vi.spyOn(Element.prototype, "scrollLeft", "set").mockImplementation(function (
       this: Element,
       value: number,
     ) {
       offsets.set(this, Math.max(0, Math.min(value, 600 - width(this))));
     });
-    const rect = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
-      this: Element,
-    ) {
-      if (root.contains(this) && this.matches("nav.tab-bar")) {
-        return new DOMRect(0, 0, width(this), 40);
-      }
-      const nav = this.parentElement;
-      if (root.contains(this) && nav?.matches("nav.tab-bar") && this.matches("button[data-tab]")) {
-        return new DOMRect([...nav.children].indexOf(this) * 100 - nav.scrollLeft, 0, 100, 40);
-      }
-      return new DOMRect();
-    });
+    const rect = vi
+      .spyOn(Element.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: Element) {
+        if (root.contains(this) && this.matches("nav.tab-bar")) {
+          return new DOMRect(0, 0, width(this), 40);
+        }
+        const nav = this.parentElement;
+        if (
+          root.contains(this) &&
+          nav?.matches("nav.tab-bar") &&
+          this.matches("button[data-tab]")
+        ) {
+          return new DOMRect([...nav.children].indexOf(this) * 100 - nav.scrollLeft, 0, 100, 40);
+        }
+        return new DOMRect();
+      });
     return () => {
       rect.mockRestore();
       scrollSet.mockRestore();

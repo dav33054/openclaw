@@ -525,24 +525,22 @@ describe("runGlobalPackageUpdateSteps lifecycle ownership", () => {
               await writePackageRoot(packageRoot, "3.0.0");
             }
             const retainedPrefix = await fs.realpath(prefix);
-            vi.spyOn(prototype, "remove").mockImplementation(async function (
-              this: Root,
-              relativePath,
-              options,
-            ) {
-              const target = path.resolve(this.rootReal, relativePath);
-              // Refuse disposal before its first leaf removal so pending evidence survives.
-              if (
-                this.rootReal === disposalRoot.rootReal &&
-                (target === retainedPrefix || target.startsWith(`${retainedPrefix}${path.sep}`))
-              ) {
-                removalAttempts++;
-                throw Object.assign(new Error("disposable prefix cleanup denied"), {
-                  code: "EACCES",
-                });
-              }
-              return removeEntry.call(this, relativePath, options);
-            });
+            vi.spyOn(prototype, "remove").mockImplementation(
+              async function (this: Root, relativePath, options) {
+                const target = path.resolve(this.rootReal, relativePath);
+                // Refuse disposal before its first leaf removal so pending evidence survives.
+                if (
+                  this.rootReal === disposalRoot.rootReal &&
+                  (target === retainedPrefix || target.startsWith(`${retainedPrefix}${path.sep}`))
+                ) {
+                  removalAttempts++;
+                  throw Object.assign(new Error("disposable prefix cleanup denied"), {
+                    code: "EACCES",
+                  });
+                }
+                return removeEntry.call(this, relativePath, options);
+              },
+            );
           },
         );
         expect(removalAttempts).toBeGreaterThan(0);

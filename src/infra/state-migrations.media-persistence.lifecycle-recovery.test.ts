@@ -76,15 +76,14 @@ it("checks healthy agent integrity once before media migration", async () => {
   // Preserve native dispatch to each observed database connection.
   // oxlint-disable-next-line typescript/unbound-method
   const prepare = DatabaseSync.prototype.prepare;
-  vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (
-    this: DatabaseSync,
-    sql,
-  ) {
-    if (this.location() === initial.path && /^PRAGMA integrity_check\b/i.test(sql)) {
-      checks.push(sql);
-    }
-    return prepare.call(this, sql);
-  });
+  vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(
+    function (this: DatabaseSync, sql) {
+      if (this.location() === initial.path && /^PRAGMA integrity_check\b/i.test(sql)) {
+        checks.push(sql);
+      }
+      return prepare.call(this, sql);
+    },
+  );
 
   expect(await migrateLegacyMediaPersistence({ env })).toEqual({ changes: [], warnings: [] });
   expect(checks).toHaveLength(1);

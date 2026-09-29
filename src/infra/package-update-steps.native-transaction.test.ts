@@ -400,16 +400,13 @@ describe.runIf(process.platform !== "win32")("native package transactions", () =
             // oxlint-disable-next-line typescript/unbound-method -- Called below with the intercepted Root receiver to preserve its path and mutation authority.
             const copy = prototype.copyIn;
             let injections = 0;
-            const copySpy = vi.spyOn(prototype, "copyIn").mockImplementation(async function (
-              this: Root,
-              destination,
-              source,
-              options,
-            ) {
-              await copy.call(this, destination, source, options);
-              injections += 1;
-              current = false;
-            });
+            const copySpy = vi
+              .spyOn(prototype, "copyIn")
+              .mockImplementation(async function (this: Root, destination, source, options) {
+                await copy.call(this, destination, source, options);
+                injections += 1;
+                current = false;
+              });
             try {
               await expect(retained!.rollback(assertCurrent)).rejects.toThrow(
                 "native executor lost",
@@ -640,22 +637,19 @@ describe.runIf(process.platform !== "win32")("native package transactions", () =
         const backupRoot = retained.backupRoot;
         let copyRefusals = 0;
         let renameRefusals = 0;
-        const copySpy = vi.spyOn(prototype, "copyIn").mockImplementation(async function (
-          this: Root,
-          destination,
-          source,
-          options,
-        ) {
-          if (
-            rollbackFailure === "shim" &&
-            path.dirname(this.rootReal) === canonicalBin &&
-            path.basename(this.rootReal).startsWith(".openclaw-shim-stage-")
-          ) {
-            copyRefusals += 1;
-            throw Object.assign(new Error("launcher restoration failed"), { code: "EACCES" });
-          }
-          await copy.call(this, destination, source, options);
-        });
+        const copySpy = vi
+          .spyOn(prototype, "copyIn")
+          .mockImplementation(async function (this: Root, destination, source, options) {
+            if (
+              rollbackFailure === "shim" &&
+              path.dirname(this.rootReal) === canonicalBin &&
+              path.basename(this.rootReal).startsWith(".openclaw-shim-stage-")
+            ) {
+              copyRefusals += 1;
+              throw Object.assign(new Error("launcher restoration failed"), { code: "EACCES" });
+            }
+            await copy.call(this, destination, source, options);
+          });
         const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (...args) => {
           if (rollbackFailure === "package" && String(args[0]) === backupRoot) {
             renameRefusals += 1;

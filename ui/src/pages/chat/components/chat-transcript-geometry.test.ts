@@ -222,19 +222,19 @@ describe("chat transcript geometry", () => {
     let regionHeight = 600;
     let gutter = 100;
     let innerWidth = 768;
-    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (
-      this: HTMLElement,
-    ) {
-      return this.classList.contains("chat-thread-inner") ? innerWidth : 1200;
-    });
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(
+      function (this: HTMLElement) {
+        return this.classList.contains("chat-thread-inner") ? innerWidth : 1200;
+      },
+    );
     const readInnerBounds = vi.fn(() => new DOMRect(gutter, 0, innerWidth, 1200));
-    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
-      this: Element,
-    ) {
-      return this.classList.contains("chat-thread-inner")
-        ? readInnerBounds()
-        : new DOMRect(0, 0, 1200, 600);
-    });
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: Element) {
+        return this.classList.contains("chat-thread-inner")
+          ? readInnerBounds()
+          : new DOMRect(0, 0, 1200, 600);
+      },
+    );
     Object.defineProperty(region, "clientHeight", { get: () => regionHeight });
     const props = {
       ...threadProps("rail-geometry"),

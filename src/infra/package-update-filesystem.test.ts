@@ -150,13 +150,12 @@ it("keeps the live launcher intact when its replacement copy is interrupted", as
   await fs.writeFile(source, "previous launcher\n");
   await fs.writeFile(destination, "candidate launcher\n");
   const prototype = Object.getPrototypeOf(await fsSafeRoot(root)) as Root;
-  const copy = vi.spyOn(prototype, "copyIn").mockImplementationOnce(async function (
-    this: Root,
-    target,
-  ) {
-    await fs.writeFile(path.join(this.rootReal, target), "partial launcher");
-    throw new Error("interrupted launcher copy");
-  });
+  const copy = vi
+    .spyOn(prototype, "copyIn")
+    .mockImplementationOnce(async function (this: Root, target) {
+      await fs.writeFile(path.join(this.rootReal, target), "partial launcher");
+      throw new Error("interrupted launcher copy");
+    });
 
   await expect(copyPackagePathEntry(source, destination)).rejects.toThrow(
     "interrupted launcher copy",
@@ -288,18 +287,15 @@ it("keeps the live tree intact and cleans private staging after copy authority c
   const prototype = Object.getPrototypeOf(await fsSafeRoot(root)) as Root;
   // oxlint-disable-next-line typescript/unbound-method -- Keep the real copy receiver and authority options.
   const copy = prototype.copyIn;
-  vi.spyOn(prototype, "copyIn").mockImplementation(async function (
-    this: Root,
-    target,
-    copySource,
-    options,
-  ) {
-    await copy.call(this, target, copySource, options);
-    copied.push(path.basename(target));
-    if (path.basename(target) === "a.txt") {
-      revoked = true;
-    }
-  });
+  vi.spyOn(prototype, "copyIn").mockImplementation(
+    async function (this: Root, target, copySource, options) {
+      await copy.call(this, target, copySource, options);
+      copied.push(path.basename(target));
+      if (path.basename(target) === "a.txt") {
+        revoked = true;
+      }
+    },
+  );
   __setFsSafeTestHooksForTest({
     beforeRootFallbackMutation(operation, target) {
       if (operation === "remove") {
@@ -336,19 +332,16 @@ it("retains the first copy failure when private staging has been replaced", asyn
   const copy = prototype.copyIn;
   const refused = new Error("copy completion refused");
   let replaced = "";
-  vi.spyOn(prototype, "copyIn").mockImplementationOnce(async function (
-    this: Root,
-    target,
-    from,
-    options,
-  ) {
-    await copy.call(this, target, from, options);
-    replaced = this.rootReal;
-    await fs.rename(replaced, retained);
-    await fs.mkdir(replaced);
-    await fs.writeFile(path.join(replaced, "foreign.txt"), "successor staging");
-    throw refused;
-  });
+  vi.spyOn(prototype, "copyIn").mockImplementationOnce(
+    async function (this: Root, target, from, options) {
+      await copy.call(this, target, from, options);
+      replaced = this.rootReal;
+      await fs.rename(replaced, retained);
+      await fs.mkdir(replaced);
+      await fs.writeFile(path.join(replaced, "foreign.txt"), "successor staging");
+      throw refused;
+    },
+  );
 
   await expect(copyPackagePathEntry(source, destination)).rejects.toBe(refused);
 

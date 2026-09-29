@@ -169,17 +169,15 @@ it("rolls schedule maintenance back when process ownership changes before commit
   let activated = false;
   // oxlint-disable-next-line typescript/unbound-method -- The private port remains the receiver.
   const originalPost = MessagePort.prototype.postMessage;
-  const post = vi.spyOn(MessagePort.prototype, "postMessage").mockImplementation(function (
-    this: MessagePort,
-    value,
-    transferList,
-  ) {
-    if (isRecord(value) && Array.isArray(value.ownership)) {
-      markCronJobActive(job.id);
-      activated = true;
-    }
-    return originalPost.call(this, value, transferList);
-  });
+  const post = vi
+    .spyOn(MessagePort.prototype, "postMessage")
+    .mockImplementation(function (this: MessagePort, value, transferList) {
+      if (isRecord(value) && Array.isArray(value.ownership)) {
+        markCronJobActive(job.id);
+        activated = true;
+      }
+      return originalPost.call(this, value, transferList);
+    });
   try {
     await expect(recomputeUnownedCronSchedules(state)).rejects.toThrow(
       "Cron schedule ownership changed before commit",

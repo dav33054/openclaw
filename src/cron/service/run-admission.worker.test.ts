@@ -115,17 +115,15 @@ function duringPreparation(
   // oxlint-disable-next-line typescript/unbound-method -- Retain the intercepted port as receiver.
   const original = MessagePort.prototype.postMessage;
   let observed = false;
-  const spy = vi.spyOn(MessagePort.prototype, "postMessage").mockImplementation(function (
-    this: MessagePort,
-    value,
-    transferList,
-  ) {
-    if (!observed && isRecord(value) && matches(value)) {
-      observed = true;
-      mutate();
-    }
-    return original.call(this, value, transferList);
-  });
+  const spy = vi
+    .spyOn(MessagePort.prototype, "postMessage")
+    .mockImplementation(function (this: MessagePort, value, transferList) {
+      if (!observed && isRecord(value) && matches(value)) {
+        observed = true;
+        mutate();
+      }
+      return original.call(this, value, transferList);
+    });
   return { restore: () => spy.mockRestore(), observed: () => observed };
 }
 

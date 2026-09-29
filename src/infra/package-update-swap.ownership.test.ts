@@ -127,21 +127,18 @@ describe("retained package transaction authority", () => {
         const prototype = Object.getPrototypeOf(await fsSafeRoot(base)) as Root;
         // oxlint-disable-next-line typescript/unbound-method -- Called below with the intercepted Root receiver to preserve its path and mutation authority.
         const copy = prototype.copyIn;
-        vi.spyOn(prototype, "copyIn").mockImplementation(async function (
-          this: Root,
-          target,
-          source,
-          options,
-        ) {
-          expect(path.dirname(this.rootReal)).toBe(launcherParent);
-          expect(path.basename(this.rootReal)).toMatch(/^\.openclaw-shim-stage-/);
-          privateStages.add(this.rootReal);
-          record("copy", path.join(this.rootReal, target));
-          await copy.call(this, target, source, options);
-          if (boundary === "launcher") {
-            revoke();
-          }
-        });
+        vi.spyOn(prototype, "copyIn").mockImplementation(
+          async function (this: Root, target, source, options) {
+            expect(path.dirname(this.rootReal)).toBe(launcherParent);
+            expect(path.basename(this.rootReal)).toMatch(/^\.openclaw-shim-stage-/);
+            privateStages.add(this.rootReal);
+            record("copy", path.join(this.rootReal, target));
+            await copy.call(this, target, source, options);
+            if (boundary === "launcher") {
+              revoke();
+            }
+          },
+        );
         const chmod = fs.chmod.bind(fs);
         vi.spyOn(fs, "chmod").mockImplementation(async (...args) => {
           record("chmod", String(args[0]));

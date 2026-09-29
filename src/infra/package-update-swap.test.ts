@@ -156,17 +156,15 @@ describe("retained package backup retirement", () => {
     const prototype = Object.getPrototypeOf(await fsSafeRoot(base)) as Root;
     // oxlint-disable-next-line typescript/unbound-method -- Preserve the intercepted Root receiver for unrelated cleanup.
     const removeEntry = prototype.remove;
-    vi.spyOn(prototype, "remove").mockImplementation(async function (
-      this: Root,
-      relativePath,
-      options,
-    ) {
-      const target = path.resolve(this.rootReal, relativePath);
-      if (target === snapshots || target.startsWith(`${snapshots}${path.sep}`)) {
-        throw Object.assign(new Error("snapshot cleanup denied"), { code: "EACCES" });
-      }
-      return removeEntry.call(this, relativePath, options);
-    });
+    vi.spyOn(prototype, "remove").mockImplementation(
+      async function (this: Root, relativePath, options) {
+        const target = path.resolve(this.rootReal, relativePath);
+        if (target === snapshots || target.startsWith(`${snapshots}${path.sep}`)) {
+          throw Object.assign(new Error("snapshot cleanup denied"), { code: "EACCES" });
+        }
+        return removeEntry.call(this, relativePath, options);
+      },
+    );
     const completion = await transaction.complete({ activationVerified: true }, () => {});
     const retained = snapshots.replace(".openclaw.package-backup-", ".openclaw-package-backup-");
     expect(completion).toMatchObject({
@@ -313,23 +311,21 @@ describe("launcher backup capture", () => {
         let copyRefusals = 0;
         let cleanupRefusals = 0;
         let retirementRefusals = 0;
-        const remove = vi.spyOn(prototype, "remove").mockImplementation(async function (
-          this: Root,
-          relativePath,
-          options,
-        ) {
-          const target = path.resolve(this.rootReal, relativePath);
-          // Let each copy finish cleaning its private staging directory first.
-          if (
-            cleanupDenied &&
-            path.basename(target) === path.basename(launcher) &&
-            path.basename(path.dirname(target)).startsWith(".openclaw.shim-backup-")
-          ) {
-            cleanupRefusals += 1;
-            throw Object.assign(new Error("backup cleanup denied"), { code: "EACCES" });
-          }
-          return removeEntry.call(this, relativePath, options);
-        });
+        const remove = vi
+          .spyOn(prototype, "remove")
+          .mockImplementation(async function (this: Root, relativePath, options) {
+            const target = path.resolve(this.rootReal, relativePath);
+            // Let each copy finish cleaning its private staging directory first.
+            if (
+              cleanupDenied &&
+              path.basename(target) === path.basename(launcher) &&
+              path.basename(path.dirname(target)).startsWith(".openclaw.shim-backup-")
+            ) {
+              cleanupRefusals += 1;
+              throw Object.assign(new Error("backup cleanup denied"), { code: "EACCES" });
+            }
+            return removeEntry.call(this, relativePath, options);
+          });
         const move = vi.spyOn(fs, "rename").mockImplementation(async (...args) => {
           if (
             cleanupDenied &&
@@ -341,25 +337,22 @@ describe("launcher backup capture", () => {
           return rename(...args);
         });
         let firstBackup: string | undefined;
-        const copy = vi.spyOn(prototype, "copyIn").mockImplementation(async function (
-          this: Root,
-          destination,
-          source,
-          options,
-        ) {
-          if (source === secondLauncher) {
-            const backupDir = (await fs.readdir(globalRoot)).find((entry) =>
-              entry.startsWith(".openclaw.shim-backup-"),
-            );
-            if (!backupDir) {
-              throw new Error("missing partial launcher backup");
+        const copy = vi
+          .spyOn(prototype, "copyIn")
+          .mockImplementation(async function (this: Root, destination, source, options) {
+            if (source === secondLauncher) {
+              const backupDir = (await fs.readdir(globalRoot)).find((entry) =>
+                entry.startsWith(".openclaw.shim-backup-"),
+              );
+              if (!backupDir) {
+                throw new Error("missing partial launcher backup");
+              }
+              firstBackup = await fs.readFile(path.join(globalRoot, backupDir, "openclaw"), "utf8");
+              copyRefusals += 1;
+              throw new Error("second launcher backup refused");
             }
-            firstBackup = await fs.readFile(path.join(globalRoot, backupDir, "openclaw"), "utf8");
-            copyRefusals += 1;
-            throw new Error("second launcher backup refused");
-          }
-          await copyIn.call(this, destination, source, options);
-        });
+            await copyIn.call(this, destination, source, options);
+          });
         const beforeActivate = vi.fn();
         const onLiveMutation = vi.fn();
         const onTransaction = vi.fn();

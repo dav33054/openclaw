@@ -93,11 +93,11 @@ describe.runIf(browserMode)("file draft document reload protection", () => {
     expect(clipboard).toHaveBeenCalledWith(draft);
     const createUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:recovered-file");
     const downloadedNames: string[] = [];
-    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (
-      this: HTMLAnchorElement,
-    ) {
-      downloadedNames.push(this.download);
-    });
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(
+      function (this: HTMLAnchorElement) {
+        downloadedNames.push(this.download);
+      },
+    );
     await page.getByRole("button", { name: `Download ${file.name}`, exact: true }).click();
     const blob = createUrl.mock.calls[0]?.[0];
     expect(blob).toBeInstanceOf(Blob);
