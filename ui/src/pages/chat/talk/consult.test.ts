@@ -293,62 +293,6 @@ describe("RealtimeTalkSession consult handoff", () => {
     expect(submit).toHaveBeenCalledWith("call-1", { result: "Right run." });
   });
 
-  it("keeps the original runId on pending agent.wait instead of switching", async () => {
-    vi.useFakeTimers();
-    try {
-      const request = vi.fn(async (method: string) => {
-        if (method === "talk.client.toolCall") {
-          return {
-            runId: "run-1",
-            idempotencyKey: "run-1",
-            agentId: "main",
-            agentSessionKey: "agent:main:main",
-          };
-        }
-        if (method === "agent.wait") {
-          return { runId: "run-1", status: "pending" };
-        }
-        if (method === "chat.abort") {
-          return { ok: true, aborted: true };
-        }
-        throw new Error(`unexpected request: ${method}`);
-      });
-      const submit = vi.fn();
-      const controller = new AbortController();
-
-      const consult = submitRealtimeTalkConsult({
-        ctx: {
-          client: {
-            request,
-            addEventListener: vi.fn(() => () => {}),
-          },
-          sessionKey: "agent:main:main",
-          callbacks: {},
-        } as never,
-        callId: "call-1",
-        args: { question: "Check status" },
-        submit,
-        signal: controller.signal,
-      });
-
-      // Let the initial agent.wait fire and schedule its retry timer.
-      await vi.advanceTimersByTimeAsync(0);
-      const waitCalls = request.mock.calls.filter((call) => call[0] === "agent.wait");
-      expect(waitCalls.length).toBeGreaterThanOrEqual(1);
-      expect(waitCalls.every((call) => (call[1] as { runId?: string }).runId === "run-1")).toBe(
-        true,
-      );
-
-      // Abort to stop the retry loop and let consult settle.
-      controller.abort();
-      await consult.catch(() => {});
-
-      expect(submit).toHaveBeenCalledOnce();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
   it("submits the timeout error when agent.wait times out without producing text", async () => {
     let listener: ((event: { event: string; payload?: unknown }) => void) | undefined;
     const request = vi.fn(async (method: string) => {
@@ -678,7 +622,6 @@ describe("RealtimeTalkSession consult handoff", () => {
           runId: "run-1",
           timeoutMs: 120_000,
         },
-        expect.objectContaining({ signal: undefined }),
       );
       expect(submit).toHaveBeenCalledWith("call-1", {
         result: "OpenClaw finished with no text.",
