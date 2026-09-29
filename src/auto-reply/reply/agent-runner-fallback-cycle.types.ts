@@ -44,7 +44,9 @@ export type AgentFallbackCandidateCommonParams = {
   onContextEngineTurnCandidate: RunEmbeddedAgentParams["onContextEngineTurnCandidate"];
   assistantErrorTranscript: RunEmbeddedAgentParams["assistantErrorTranscript"];
   authProfileFailurePolicy: RunEmbeddedAgentParams["authProfileFailurePolicy"];
-  onSourceReplyDelivered: NonNullable<RunEmbeddedAgentParams["onSourceReplyDelivered"]>;
+  onCompletedSourceReplyDelivered: NonNullable<
+    RunEmbeddedAgentParams["onCompletedSourceReplyDelivered"]
+  >;
   notifyUserMessagePersisted: () => void;
   fastModeStartedAtMs: number;
   fastModeAutoProgressState: FastModeAutoProgressState;
@@ -64,7 +66,7 @@ export type AgentFallbackCandidateCommonParams = {
 
 export type AgentFallbackCycleState = {
   /** Canonical current-source message-tool delivery completed during this logical turn. */
-  sourceReplyDelivered?: boolean;
+  completedSourceReplyDelivered?: boolean;
   maintenanceAuthProfile?: CompletedAgentAuthSelection;
   compactionRequestBudget?: CompactionRequestBudget;
   deferredLifecycle: DeferredEmbeddedRunLifecycleManager;
