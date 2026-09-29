@@ -157,6 +157,58 @@ export function registerActiveMemoryEscalationIntegrationTests({
     expect(hasDebugLine("active-memory: escalation decision fallback reason=error")).toBe(true);
   });
 
+  it("does not dispatch when Decision assistance is revoked while the runtime prepares", async () => {
+    enableDecisionEscalation(recallAnswer(0.1));
+    let dispatched = false;
+    evaluateDecision.mockImplementation(async (_batch, options) => {
+      setDecisionAssistance(false);
+      // Preparation awaits before the runtime's final pre-dispatch signal check.
+      await new Promise((resolve) => {
+        setTimeout(resolve, 60);
+      });
+      options.signal.throwIfAborted();
+      dispatched = true;
+      return recallAnswer(0.1);
+    });
+
+    const result = await runPromptBuild(
+      { prompt: "What did we decide last time?" },
+      operatorContext,
+    );
+
+    expect(evaluateDecision).toHaveBeenCalledOnce();
+    expect(dispatched).toBe(false);
+    expect(runEmbeddedAgent).toHaveBeenCalledOnce();
+    expectPrependContextContains(result, "lemon pepper wings");
+    expect(
+      hasDebugLine(
+        "active-memory: escalation decision unavailable reason=revoked; using built-in matcher",
+      ),
+    ).toBe(true);
+  });
+
+  it("ignores the answer when escalationDecision is withdrawn during inference", async () => {
+    enableDecisionEscalation(recallAnswer(0.1));
+    evaluateDecision.mockImplementation(async () => {
+      // Dispatched already; the opt-in is withdrawn before the skip answer arrives.
+      registerPluginConfig({ mode: "escalate" });
+      await new Promise((resolve) => {
+        setTimeout(resolve, 60);
+      });
+      return recallAnswer(0.1);
+    });
+
+    const result = await runPromptBuild(
+      { prompt: "What did we decide last time?" },
+      operatorContext,
+    );
+
+    expect(evaluateDecision).toHaveBeenCalledOnce();
+    expect(runEmbeddedAgent).toHaveBeenCalledOnce();
+    expectPrependContextContains(result, "lemon pepper wings");
+    expect(hasDebugLine("active-memory: recall skipped reason=decision-skip")).toBe(false);
+  });
+
   it("does not ask the Decision model without Decision assistance", async () => {
     enableDecisionEscalation(recallAnswer(0.1));
     setDecisionAssistance(false);
