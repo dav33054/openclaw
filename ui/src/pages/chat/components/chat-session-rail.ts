@@ -1,4 +1,5 @@
 import "../../../styles/chat/session-rail.css";
+import "./chat-comment-controller.ts";
 import { html, nothing, type PropertyValues, type TemplateResult } from "lit";
 import { property, state } from "lit/decorators.js";
 import { ref } from "lit/directives/ref.js";
@@ -13,10 +14,10 @@ import { renderPanelLoadingSkeleton } from "../../../components/panel-loading-sk
 import "../../../components/tooltip.ts";
 import "../../../components/web-awesome.ts";
 import { t } from "../../../i18n/index.ts";
-import type { ChatAttachment } from "../../../lib/chat/chat-types.ts";
 import { formatDurationCompact } from "../../../lib/format-duration.ts";
 import { formatTimeAgo, formatTimeMs } from "../../../lib/format.ts";
 import { OpenClawLightDomElement } from "../../../lit/openclaw-element.ts";
+import { SubscriptionsController } from "../../../lit/subscriptions-controller.ts";
 import {
   type ChatObserverDisplayPreference,
   loadChatObserverDisplayPreference,
@@ -31,6 +32,7 @@ import { createChatAttachmentDropHandlers } from "./chat-attachments.ts";
 import { renderMessageMarkdown } from "./chat-message-text.ts";
 import {
   createSessionRailComposer,
+  sessionRailQuestion,
   renderSessionRailComposer,
 } from "./chat-session-rail-composer.ts";
 
@@ -216,9 +218,12 @@ export class ChatSessionRailElement extends OpenClawLightDomElement {
   @property({ attribute: false }) onCommandConsumed?: (generation: number) => void;
   @property({ attribute: false }) onSubmit?: (question: string | ChatSessionCompanionTurn) => void;
   @property({ attribute: false }) onDraftChange?: (draft: string) => void;
-  @property({ attribute: false }) onAttachmentsChange?: (attachments: ChatAttachment[]) => void;
+  @property({ attribute: false })
+  onAttachmentsChange?: ChatAttachmentControlsProps["onAttachmentsChange"];
   @property({ attribute: false })
   attachmentLimits?: ChatAttachmentControlsProps["attachmentLimits"];
+  @property({ attribute: false })
+  uploadConfig?: ChatAttachmentControlsProps["uploadConfig"];
   @property({ attribute: false }) onModeChange?: (mode: SessionRailMode) => void;
   @property({ attribute: false }) onVisibilityChange?: (visible: boolean) => void;
   @property({ type: Boolean }) embedded = false;
@@ -226,6 +231,13 @@ export class ChatSessionRailElement extends OpenClawLightDomElement {
   @property({ attribute: false }) focusRequest?: () => boolean;
   @state() private now = Date.now();
 
+  constructor() {
+    super();
+    new SubscriptionsController(this).watch(
+      () => this.uploadConfig,
+      (config, notify) => config.subscribe(notify),
+    );
+  }
   private readonly railState = new ChatSessionRailState();
   private clock: ReturnType<typeof globalThis.setTimeout> | null = null;
   private renderedMode: SessionRailMode = "hidden";
@@ -351,9 +363,7 @@ export class ChatSessionRailElement extends OpenClawLightDomElement {
   }
 
   private submit() {
-    const question =
-      this.companion.draft.trim() ||
-      (this.companion.attachments?.length ? t("chat.rail.askImageQuestion") : "");
+    const question = sessionRailQuestion(this.companion);
     if (
       question &&
       this.connected &&
@@ -536,11 +546,13 @@ export class ChatSessionRailElement extends OpenClawLightDomElement {
     const reads = companion.attachmentReads;
     const readSignal = reads?.readSignal;
     const attachmentProps: ChatAttachmentControlsProps = {
+      uploadConfig: this.uploadConfig,
       attachments: companion.attachments,
       getAttachments: () => companion.attachments ?? [],
       attachmentReads: reads,
       readSignal,
       attachmentLimits: this.attachmentLimits,
+      selectionContextOnly: true,
       imagesOnly: true,
       disabled: !this.connected,
       onAttachmentsChange: this.onAttachmentsChange,
@@ -683,6 +695,12 @@ export class ChatSessionRailElement extends OpenClawLightDomElement {
             ? this.renderStarters()
             : nothing
         }
+        <openclaw-chat-comment-controller
+          .paneId=${`side-chat:${this.sessionKey}`}
+          .props=${attachmentProps}
+          .sessionKey=${this.sessionKey}
+          .presented=${this.presented}
+        ></openclaw-chat-comment-controller>
         ${renderSessionRailComposer({ companion, connected: this.connected, pending, sendShortcut: this.sendShortcut, composer: this.composer, attachmentProps, submit: () => this.submit() })}
       </section>
     `;

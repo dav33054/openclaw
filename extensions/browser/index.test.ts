@@ -79,15 +79,6 @@ function createApi() {
     entries: vi.fn(async () => []),
     clear: vi.fn(async () => undefined),
   }));
-  const openSyncKeyedStore = vi.fn(() => ({
-    register: vi.fn(),
-    registerIfAbsent: vi.fn(() => true),
-    lookup: vi.fn(() => undefined),
-    consume: vi.fn(() => undefined),
-    delete: vi.fn(() => false),
-    entries: vi.fn(() => []),
-    clear: vi.fn(),
-  }));
   const api = createTestPluginApi({
     id: "browser",
     name: "Browser",
@@ -95,7 +86,7 @@ function createApi() {
     rootDir: "/plugins/browser",
     config: {},
     runtime: {
-      state: { openKeyedStore, openSyncKeyedStore },
+      state: { openKeyedStore },
     } as unknown as OpenClawPluginApi["runtime"],
     registerCli,
     registerGatewayMethod,
@@ -105,7 +96,6 @@ function createApi() {
   return {
     api,
     openKeyedStore,
-    openSyncKeyedStore,
     registerCli,
     registerGatewayMethod,
     registerService,
@@ -163,7 +153,7 @@ describe("browser plugin", () => {
   });
 
   it("initializes the durable tab registry without loading browser control or Gateway runtime", () => {
-    const { api, openSyncKeyedStore } = createApi();
+    const { api, openKeyedStore } = createApi();
     Object.defineProperty(api.runtime, "gateway", {
       get() {
         throw new Error("Gateway runtime must stay lazy during Browser registration");
@@ -171,11 +161,14 @@ describe("browser plugin", () => {
     });
     registerBrowserPlugin(api);
 
-    expect(openSyncKeyedStore).toHaveBeenCalledWith({
+    expect(openKeyedStore).toHaveBeenCalledWith({
       namespace: "browser.session-tabs",
       maxEntries: 5_000,
       overflowPolicy: "reject-new",
     });
+    for (const store of openKeyedStore.mock.results) {
+      expect(store.value.entries).not.toHaveBeenCalled();
+    }
     expect(runtimeApiMocks.createBrowserPluginService).not.toHaveBeenCalled();
   });
 

@@ -250,10 +250,17 @@ function stabilizeChatItems(
     const prior = previousByKey.get(`${item.kind}\u0000${item.key}`);
     return prior && sameChatItem(prior, item) ? prior : item;
   });
-  return stabilized.length === previous.length &&
-    stabilized.every((item, index) => item === previous[index])
-    ? previous
-    : stabilized;
+  return sameEntries(stabilized, previous) ? previous : stabilized;
+}
+
+function sameEntries<T>(previous?: readonly T[], next?: readonly T[]): boolean {
+  return (
+    previous === next ||
+    (previous !== undefined &&
+      next !== undefined &&
+      previous.length === next.length &&
+      previous.every((entry, index) => entry === next[index]))
+  );
 }
 
 function sameChatItemsStructuralInput(
@@ -274,7 +281,9 @@ function sameChatItemsStructuralInput(
     previous.streamStartedAt === next.streamStartedAt &&
     previous.queue === next.queue &&
     previous.initialTurnId === next.initialTurnId &&
-    previous.pendingInputs === next.pendingInputs &&
+    // renderChat derives this list of immutable Gateway records on every render,
+    // including scroll-driven ones; identity would rebuild all loaded history.
+    sameEntries(previous.pendingInputs, next.pendingInputs) &&
     previous.workspaceSyncPendingRunIds === next.workspaceSyncPendingRunIds &&
     previous.workerSetupPending === next.workerSetupPending &&
     previous.showToolCalls === next.showToolCalls &&
@@ -315,6 +324,10 @@ function updateCachedLiveStream(cached: CachedChatItems, input: BuildChatItemsPr
   return true;
 }
 
+export function findLiveStreamIndex(items: readonly RenderChatItem[]): number {
+  return items.findIndex((item) => item.kind === "stream" && item.isStreaming);
+}
+
 export function buildCachedChatItems(
   input: BuildChatItemsProps,
 ): ReturnType<typeof buildChatItems> {
@@ -346,7 +359,7 @@ export function buildCachedChatItems(
   const items = stabilizeChatItems(cached.items, buildChatItems(input, cached.inputOrder));
   cached.input = input;
   cached.items = items;
-  const liveStreamIndex = items.findIndex((item) => item.kind === "stream" && item.isStreaming);
+  const liveStreamIndex = findLiveStreamIndex(items);
   cached.liveStream =
     liveStreamIndex < 0
       ? null
