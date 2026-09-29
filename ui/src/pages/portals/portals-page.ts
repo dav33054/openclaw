@@ -199,7 +199,12 @@ class PortalsPage extends OpenClawLightDomElement {
   }
 
   private get portalListSupported(): boolean {
-    return isGatewayMethodAdvertised(this.gateway.snapshot ?? {}, "portal.list") !== false;
+    const snapshot = this.gateway.snapshot;
+    return (
+      canCallGatewayMethod(snapshot, "portal.list", "operator.read", {
+        requireAdvertisement: false,
+      }) && isGatewayMethodAdvertised(snapshot ?? {}, "portal.list") !== false
+    );
   }
 
   private get canClosePortal(): boolean {
@@ -362,7 +367,8 @@ class PortalsPage extends OpenClawLightDomElement {
   }
 
   private renderEmptyState() {
-    const unsupported = !this.portalListSupported;
+    const advertised = isGatewayMethodAdvertised(this.gateway.snapshot ?? {}, "portal.list");
+    const unsupported = advertised === false;
     return html`
       <section class="portals-empty" role="status" aria-live="polite">
         ${
@@ -386,7 +392,11 @@ class PortalsPage extends OpenClawLightDomElement {
         ${
           unsupported
             ? html`<div class="portals-empty__note">${t("portalsPage.unsupported")}</div>`
-            : nothing
+            : advertised === true && !this.portalListSupported
+              ? html`<div class="portals-empty__note">
+                  ${t("sessionsView.actionRequiresScope", { scope: "operator.read" })}
+                </div>`
+              : nothing
         }
         ${this.error ? html`<div class="callout danger">${this.error}</div>` : nothing}
       </section>

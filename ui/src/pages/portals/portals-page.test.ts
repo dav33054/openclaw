@@ -35,8 +35,9 @@ const portal = {
 } satisfies PortalSummary;
 
 function createContext(
-  methods: string[],
+  methods: string[] | null,
   request: (method: string, params: Record<string, unknown>) => Promise<unknown>,
+  scopes = ["operator.read", "operator.write"],
 ) {
   const requestMock = vi.fn(request);
   const client = { request: requestMock } as unknown as GatewayBrowserClient;
@@ -45,7 +46,9 @@ function createContext(
     phase: "connected",
     offlineStable: false,
     canvasPluginSurfaceUrl: null,
-    hello: gatewayHelloForMethods(methods, ["operator.write"]),
+    hello: methods
+      ? gatewayHelloForMethods(methods, scopes)
+      : { ...gatewayHelloForMethods([], scopes), features: undefined },
     assistantAgentId: null,
     sessionKey: "main",
     lastError: null,
@@ -103,6 +106,26 @@ beforeEach(() => {
 });
 
 describe("PortalsPage", () => {
+  it("retains portal listing for a read-capable connection with no method catalog", async () => {
+    const source = createContext(null, async () => ({ portals: [] }));
+    await mountPage(source.context);
+    await vi.waitFor(() => expect(source.request).toHaveBeenCalledWith("portal.list", {}));
+  });
+  it("does not list advertised portals without operator.read or show a request error", async () => {
+    const source = createContext(
+      ["portal.list"],
+      async () => {
+        throw new Error("unauthorized portal read");
+      },
+      ["operator.sessions.read", "operator.sessions.write"],
+    );
+    const page = await mountPage(source.context);
+    await page.updateComplete;
+    expect(source.request).not.toHaveBeenCalled();
+    expect(page.textContent).toContain("This action requires operator.read access.");
+    expect(page.textContent).not.toContain("unauthorized portal read");
+    expect(page.textContent).not.toContain("This gateway does not support portals.");
+  });
   it("shows machine startup before selecting only the portal explicitly opened for its app", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     let environment: EnvironmentSummary = {
