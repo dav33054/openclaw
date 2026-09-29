@@ -92,12 +92,19 @@ export function resolveIngressWorkspaceOverrideForSessionRun(
   metadata?:
     | (Pick<SpawnedRunMetadata, "spawnedBy" | "workspaceDir"> & {
         cwd?: string | null;
+        execHost?: string | null;
       })
     | null,
 ): string | undefined {
   const normalized = normalizeSpawnedRunMetadata(metadata);
   if (normalized.spawnedBy) {
     return normalized.workspaceDir;
+  }
+  // A node-host cwd belongs to the remote execution binding. Older adopted
+  // CLI sessions also persisted it as spawnedCwd, but it must never become a
+  // Gateway-local workspace on later turns.
+  if (normalizeOptionalString(metadata?.execHost) === "node") {
+    return undefined;
   }
   // Dashboard worktree sessions are not subagents, so their managed cwd is
   // also the workspace that sandbox setup must mount on every later turn.
