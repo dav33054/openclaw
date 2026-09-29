@@ -10,6 +10,7 @@ import {
   type WebLoginStartParams,
   type WebLoginWaitParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { resolveChannelDefaultAccountId } from "../../channels/plugins/helpers.js";
 import { listChannelPlugins, normalizeChannelId } from "../../channels/plugins/index.js";
 import { listLoadedChannelPluginsForRegistry } from "../../channels/plugins/registry-loaded.js";
 import type { ChannelId } from "../../channels/plugins/types.public.js";
@@ -114,11 +115,11 @@ function resolveWebLoginRequest<TMethod extends WebLoginGatewayMethod>(params: {
   context: GatewayRequestContext;
   gatewayMethod: TMethod;
 }): {
-  accountId?: string;
+  requestedAccountId?: string;
+  lifecycleAccountId: string;
   provider: WebLoginProvider;
   run: NonNullable<WebLoginGateway[TMethod]>;
 } | null {
-  const accountId = params.rawParams.accountId;
   const provider = resolveWebLoginProvider(params.rawParams.channel);
   if (!provider) {
     respondProviderUnavailable({
@@ -133,7 +134,20 @@ function resolveWebLoginRequest<TMethod extends WebLoginGatewayMethod>(params: {
     respondProviderUnsupported(params.respond, provider.id);
     return null;
   }
-  return { accountId, provider, run: run.bind(gateway) as NonNullable<WebLoginGateway[TMethod]> };
+  // Lifecycle control needs one concrete account so an omitted one does not fan out across
+  // the channel. The plugin keeps receiving the request as sent: account ids and credential
+  // profiles are not the same namespace, and some plugins resolve an omitted account
+  // differently from a named one.
+  const requestedAccountId = params.rawParams.accountId;
+  const lifecycleAccountId =
+    requestedAccountId ??
+    resolveChannelDefaultAccountId({ plugin: provider, cfg: params.context.getRuntimeConfig() });
+  return {
+    ...(requestedAccountId === undefined ? {} : { requestedAccountId }),
+    lifecycleAccountId,
+    provider,
+    run: run.bind(gateway) as NonNullable<WebLoginGateway[TMethod]>,
+  };
 }
 
 /** Checks whether the matching channel/account should be restored after login start. */
@@ -172,34 +186,34 @@ export const webHandlers: GatewayRequestHandlers = {
       if (!request) {
         return;
       }
-      const { accountId, provider, run } = request;
+      const { requestedAccountId, lifecycleAccountId, provider, run } = request;
       const wasRunning = wasChannelRunning({
         context,
         channelId: provider.id,
-        accountId,
+        accountId: lifecycleAccountId,
       });
       const forceLogin = Boolean(params.force);
       const stoppedBeforeLogin = forceLogin || !wasRunning;
       if (stoppedBeforeLogin) {
-        await context.stopChannel(provider.id, accountId);
+        await context.stopChannel(provider.id, lifecycleAccountId);
       }
       const result = await run({
         force: forceLogin,
         timeoutMs: params.timeoutMs,
         verbose: Boolean(params.verbose),
-        accountId,
+        accountId: requestedAccountId,
       });
       const stoppedAfterQrTakeover = !stoppedBeforeLogin && Boolean(result.qrDataUrl);
       if (stoppedAfterQrTakeover) {
-        await context.stopChannel(provider.id, accountId);
+        await context.stopChannel(provider.id, lifecycleAccountId);
       }
       const stoppedForLogin = stoppedBeforeLogin || stoppedAfterQrTakeover;
       if (result.connected && stoppedForLogin) {
-        await context.startChannel(provider.id, accountId);
+        await context.startChannel(provider.id, lifecycleAccountId);
       } else if (wasRunning && stoppedForLogin && !result.qrDataUrl) {
         // When start fails before producing a QR code, restore the previously
         // running channel/account so a transient login failure does not stop it.
-        await context.startChannel(provider.id, accountId);
+        await context.startChannel(provider.id, lifecycleAccountId);
       }
       respond(true, result, undefined);
     } catch (err) {
@@ -220,15 +234,15 @@ export const webHandlers: GatewayRequestHandlers = {
       if (!request) {
         return;
       }
-      const { accountId, provider, run } = request;
+      const { requestedAccountId, lifecycleAccountId, provider, run } = request;
       const result = await run({
         timeoutMs: params.timeoutMs,
-        accountId,
+        accountId: requestedAccountId,
         sessionKey: params.sessionKey,
         currentQrDataUrl: params.currentQrDataUrl,
       });
       if (result.connected) {
-        await context.startChannel(provider.id, accountId);
+        await context.startChannel(provider.id, lifecycleAccountId);
       }
       respond(true, result, undefined);
     } catch (err) {
