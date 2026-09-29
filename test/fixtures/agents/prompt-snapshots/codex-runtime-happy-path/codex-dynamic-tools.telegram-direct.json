@@ -159,6 +159,7 @@
     "inputSchema": {
       "properties": {
         "agentId": {
+          "description": "Only the requester agent is allowed as a target; no other agentId is configured. Omit to keep the requester agent (\"main\").",
           "type": "string"
         },
         "attachAs": {
