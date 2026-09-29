@@ -565,6 +565,7 @@ function createResponsesTransportExecutor(config: ResponsesTransportExecutorOpti
               abortFirstEventStream: firstEvent.abort,
               onFirstEventTimeout: getFirstStreamEventTimeoutHandler(options),
               signal: options?.signal,
+              onGeneratedImage: options?.onGeneratedImage,
               reasoningReplayMetadata: buildOpenAIResponsesReasoningReplayMetadata(model, {
                 authProfileId: responsesOptions?.authProfileId,
                 sessionId: options?.sessionId,
