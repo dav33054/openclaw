@@ -125,7 +125,7 @@ export type SkillEligibilityContext = {
   };
 };
 
-export const WORKSPACE_SKILLS_PROMPT_FORMAT_VERSION = 6;
+export const WORKSPACE_SKILLS_PROMPT_FORMAT_VERSION = 7;
 
 export type SkillSnapshot = {
   librarySelections?: import("../../packages/gateway-protocol/src/schema/skill-library.js").SkillLibrarySelection[];
@@ -151,6 +151,7 @@ export type SkillSnapshot = {
   skillRoots?: {
     agentWorkspaceDir: string;
     executionWorkspaceDir: string;
+    executionWorkspaceFileHost?: "gateway";
   };
   version?: number;
   promptFormatVersion?: number;

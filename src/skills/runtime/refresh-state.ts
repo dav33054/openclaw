@@ -19,7 +19,10 @@ type SkillsChangeEvent = {
   sourceScope?: SkillsSourceScope;
 };
 
-export type SkillsSourceScope = { executionWorkspaceDir?: string };
+export type SkillsSourceScope = {
+  executionWorkspaceDir?: string;
+  executionWorkspaceFileHost?: "gateway";
+};
 export type SkillsSourceRefreshInputs = {
   sourceScope: SkillsSourceScope;
   config?: OpenClawConfig;
@@ -100,9 +103,12 @@ function sourceScopeKey(workspaceDir: string, scope: SkillsSourceScope = {}): st
   const { executionWorkspaceDir } = normalizeWorkspaceSkillRoots({
     agentWorkspaceDir: workspaceDir,
     executionWorkspaceDir: scope.executionWorkspaceDir,
+    executionWorkspaceFileHost: scope.executionWorkspaceFileHost,
   });
   // Files in an execution root are shared by every agent and inventory consumer of that root.
-  return executionWorkspaceDir ?? "";
+  return executionWorkspaceDir
+    ? JSON.stringify([executionWorkspaceDir, scope.executionWorkspaceFileHost])
+    : "";
 }
 
 /** Record resolved file-backed winners at the discovery boundary, before session filtering. */
