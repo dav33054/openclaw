@@ -5,13 +5,14 @@ import { groupToolCalls, type ToolCallGroup } from "../../../../../src/chat/tool
 import { resolveLocalUserName } from "../../../app/user-identity.ts";
 import type { BrowserTabSelection } from "../../../components/browser/browser-target.ts";
 import { icons } from "../../../components/icons.ts";
+import "../../../components/tooltip.ts";
 import {
   personActivityLink,
   renderPersonName,
   type PersonActivityRouting,
 } from "../../../components/person-activity-link.ts";
 import { t } from "../../../i18n/index.ts";
-import type { MessageGroup, ToolCard } from "../../../lib/chat/chat-types.ts";
+import type { ChatReplyTarget, MessageGroup, ToolCard } from "../../../lib/chat/chat-types.ts";
 import { messageClientSourcesLabel } from "../../../lib/chat/message-client-source.ts";
 import { normalizeRoleForGrouping } from "../../../lib/chat/message-normalizer.ts";
 import {
@@ -47,7 +48,6 @@ import {
   renderReplyButton,
   prepareChatMessageRender,
   resolveMessageActionDetails,
-  type MessageReplyTarget,
 } from "./chat-message-markdown.ts";
 import { renderChatSendStatus, type ChatSendStatusActions } from "./chat-message-send-status.ts";
 import {
@@ -73,8 +73,6 @@ type ActiveContinuation = {
   options: StreamGroupOptions;
 };
 
-type ReplyPreview = MessageReplyTarget & { sourceMessageId: string };
-
 type GroupedMessageRenderOptions = Parameters<typeof renderGroupedMessage>[2];
 
 type RenderMessageGroupOptions = Omit<
@@ -85,7 +83,6 @@ type RenderMessageGroupOptions = Omit<
   | "messageActions"
   | "entryId"
   | "entryRef"
-  | "resolveReplyPreview"
 > &
   ChatSendStatusActions &
   Parameters<typeof renderForwardedAvatar>[1] & {
@@ -108,8 +105,7 @@ type RenderMessageGroupOptions = Omit<
     avatarPlacement?: "gutter" | "footer" | "none";
     showAssistantAvatar?: boolean;
     contextWindow?: number | null;
-    onReply?: (target: MessageReplyTarget) => void;
-    resolveReplyPreview?: (replyToId: string) => ReplyPreview | undefined;
+    onReply?: (target: ChatReplyTarget) => void;
     onRewind?: () => void;
     rewindDisabled?: boolean;
     activeContinuation?: ActiveContinuation;
