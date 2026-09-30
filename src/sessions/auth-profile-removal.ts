@@ -130,6 +130,7 @@ export async function clearRemovedSessionAuthProfiles(params: {
                             authProfileOverride: undefined,
                             authProfileOverrideSource: undefined,
                             authProfileOverrideCompactionCount: undefined,
+                            authProfileOverrideRequired: undefined,
                           }
                         : {}),
                       // Keep model rollback while preventing it from restoring a deleted account.
@@ -140,6 +141,7 @@ export async function clearRemovedSessionAuthProfiles(params: {
                               prevAuthProfileOverride: undefined,
                               prevAuthProfileOverrideSource: undefined,
                               prevAuthProfileOverrideCompactionCount: undefined,
+                              prevAuthProfileOverrideRequired: undefined,
                             },
                           }
                         : {}),
