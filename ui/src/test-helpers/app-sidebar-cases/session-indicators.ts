@@ -439,6 +439,12 @@ describe("AppSidebar session indicators", () => {
       ],
     });
     const gatewayHarness = createGatewayHarness({} as GatewayBrowserClient);
+    gatewayHarness.publish({
+      hello: {
+        auth: { role: "operator", scopes: ["operator.read"] },
+        features: { methods: [SESSION_PULL_REQUESTS_SUBSCRIBE_METHOD] },
+      } as ApplicationGatewaySnapshot["hello"],
+    });
     const { sidebar } = await mountSidebar(gatewayHarness.gateway, sessions.sessions);
     sessions.publishList({
       result: {
@@ -575,6 +581,7 @@ describe("AppSidebar session indicators", () => {
     const gatewayHarness = createGatewayHarness({ request } as unknown as GatewayBrowserClient);
     gatewayHarness.publish({
       hello: {
+        auth: { role: "operator", scopes: ["operator.read"] },
         features: { methods: [SESSION_PULL_REQUESTS_SUBSCRIBE_METHOD] },
       } as ApplicationGatewaySnapshot["hello"],
     });
