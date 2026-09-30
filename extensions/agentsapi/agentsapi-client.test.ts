@@ -17,7 +17,7 @@ afterEach(() => {
 });
 
 describe("Agents API self-hosted session connection", () => {
-  it("retains self-hosted metadata while waiting for the matching external executor", async () => {
+  it.each([false, true])("handles matching self-hosted connection actions (controller: %s)", async (controlled) => {
     const environment = {
       type: "self_hosted",
       id: "environment-fixture",
@@ -47,7 +47,8 @@ describe("Agents API self-hosted session connection", () => {
     const client = new AgentsApiClient("fixture-not-a-real-api-key", vi.fn());
     const signal = new AbortController().signal;
     expect((await client.session("session-fixture", signal)).environment).toEqual(environment);
-    expect(await client.pendingFunctionCalls("session-fixture", signal)).toEqual([
+    const connect = vi.fn(async () => {});
+    expect(await client.pendingFunctionCalls("session-fixture", signal, controlled ? connect : undefined)).toEqual([
       {
         type: "function_call",
         turn_id: "turn-fixture",
@@ -56,6 +57,7 @@ describe("Agents API self-hosted session connection", () => {
         arguments: {},
       },
     ]);
+    expect(connect.mock.calls).toEqual(controlled ? [["environment-fixture"]] : []);
   });
 
   it.each([
@@ -81,9 +83,11 @@ describe("Agents API self-hosted session connection", () => {
         release: releaseMock,
       });
       const client = new AgentsApiClient("fixture-not-a-real-api-key", vi.fn());
+      const connect = vi.fn(async () => {});
       await expect(
-        client.pendingFunctionCalls("session-fixture", new AbortController().signal),
+        client.pendingFunctionCalls("session-fixture", new AbortController().signal, connect),
       ).rejects.toThrow("cannot reconnect an environment_connection");
+      expect(connect).not.toHaveBeenCalled();
     },
   );
 });
