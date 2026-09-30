@@ -162,14 +162,18 @@ function workspaceMigrationError(
   blockedPaths: string[],
   env?: NodeJS.ProcessEnv,
   operation?: "doctor",
+  blockedByStepId?: string,
 ): Error {
+  const doctorProblem = `Legacy workspace setup state requires migration at ${blockedPaths.join(", ")}`;
   return new StartupMaintenanceRequiredError(
     "legacy-workspace",
     operation === "doctor"
-      ? formatDoctorStateRepairFailure(
-          `Legacy workspace setup state requires migration at ${blockedPaths.join(", ")}`,
-          "Stop the Gateway, then restore the retained setup file or claim from a verified backup.",
-        )
+      ? blockedByStepId
+        ? `${doctorProblem}. It was not imported because migration step "${blockedByStepId}" refused first; resolve that refusal, then rerun ${formatCliCommand("openclaw doctor --fix", env)}.`
+        : formatDoctorStateRepairFailure(
+            doctorProblem,
+            "Stop the Gateway, then restore the retained setup file or claim from a verified backup.",
+          )
       : `Legacy workspace setup state requires migration for ${blockedPaths.join(", ")}; run ${formatCliCommand("openclaw doctor --fix", env)}.`,
   );
 }
@@ -180,6 +184,8 @@ export function assertWorkspaceStateMigrationReady(params: {
   env?: NodeJS.ProcessEnv;
   homedir?: () => string;
   operation?: "doctor";
+  /** Doctor migration step whose refusal kept the workspace importer from running. */
+  blockedByStepId?: string;
 }): void {
   const blocked = params.workspaceDirs.flatMap((workspaceDir) => {
     const sourcePath = findUnmigratedWorkspaceSource(
@@ -188,7 +194,7 @@ export function assertWorkspaceStateMigrationReady(params: {
     return sourcePath ? [params.operation === "doctor" ? sourcePath : workspaceDir] : [];
   });
   if (blocked.length > 0) {
-    throw workspaceMigrationError(blocked, params.env, params.operation);
+    throw workspaceMigrationError(blocked, params.env, params.operation, params.blockedByStepId);
   }
 }
 
