@@ -168,6 +168,7 @@ const repositoryScriptEntries = [
   "scripts/fixtures/packed-plugin-sdk-type-smoke.ts!",
   // Generates the native browser page scripts from their UI source modules.
   "scripts/generate-browser-inspect-script-swift.mts!",
+  "scripts/generate-secretref-docs.ts!",
   // The diagnostics guide invokes this offline snapshot comparison CLI by path.
   "scripts/heap-snapshot-diff.mjs!",
   // CI executes screenshot evidence from the workflow-owned harness copy.
