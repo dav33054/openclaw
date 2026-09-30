@@ -163,6 +163,100 @@ describe("exec completion from a WebChat session with an explicit heartbeat targ
       expect(JSON.stringify(sendTelegram.mock.calls[0])).toContain(marker);
     });
   });
+
+  it("publishes a restart continuation into the WebChat session, not the heartbeat channel", async () => {
+    await withTempHeartbeatSandbox(async ({ tmpDir, storePath }) => {
+      setTestEnvValue("OPENCLAW_STATE_DIR", tmpDir);
+      const marker = "RESTART_CONTINUATION_STAYS_HOME";
+      const cfg: OpenClawConfig = {
+        agents: {
+          defaults: {
+            workspace: tmpDir,
+            heartbeat: { every: "0m", target: "telegram", to: "-100999000111" },
+          },
+        },
+        channels: { telegram: { allowFrom: ["*"] } },
+        messages: { visibleReplies: "message_tool" },
+        session: { store: storePath },
+      };
+      const sessionKey = await seedMainSessionStore(storePath, cfg, {
+        lastChannel: "webchat",
+        lastProvider: "",
+        lastTo: "",
+        sessionId: "webchat-restart-session",
+        lifecycleRevision: "webchat-restart-generation",
+        createdVia: "operator",
+      });
+      enqueueSystemEvent("Gateway restarted. Continue the interrupted turn.", {
+        sessionKey,
+        contextKey: "task:restart-sentinel:queue-1",
+      });
+      const sendTelegram = vi
+        .fn()
+        .mockResolvedValue({ messageId: "leaked", chatId: "-100999000111" });
+      const reply = vi.fn().mockResolvedValue(
+        createHeartbeatToolResponsePayload({
+          outcome: "done",
+          notify: true,
+          summary: "private",
+          notificationText: marker,
+        }),
+      );
+      const result = await runHeartbeatOnce({
+        cfg,
+        agentId: "main",
+        sessionKey,
+        source: "restart-sentinel",
+        intent: "immediate",
+        reason: "wake",
+        deps: { getReplyFromConfig: reply, telegram: sendTelegram },
+      });
+      expect(result.status).toBe("ran");
+      expect(reply).toHaveBeenCalledOnce();
+      expect(
+        sendTelegram,
+        "restart continuation leaked to the heartbeat channel",
+      ).not.toHaveBeenCalled();
+      expect(await publishedAssistantTexts(storePath, sessionKey, marker)).toHaveLength(1);
+    });
+  });
+
+  it("keeps the explicit target when a restart wake carries an untagged event", async () => {
+    await withTempHeartbeatSandbox(async ({ tmpDir, storePath }) => {
+      setTestEnvValue("OPENCLAW_STATE_DIR", tmpDir);
+      const marker = "UNTAGGED_WAKE_USES_HEARTBEAT_TARGET";
+      const cfg: OpenClawConfig = {
+        agents: {
+          defaults: {
+            workspace: tmpDir,
+            heartbeat: { every: "0m", target: "telegram", to: "-100999000111" },
+          },
+        },
+        channels: { telegram: { allowFrom: ["*"] } },
+        session: { store: storePath },
+      };
+      const sessionKey = await seedMainSessionStore(storePath, cfg, {
+        lastChannel: "webchat",
+        lastProvider: "",
+        lastTo: "",
+        createdVia: "operator",
+      });
+      enqueueSystemEvent("Reminder: rotate the backup disk", { sessionKey });
+      const sendTelegram = vi.fn().mockResolvedValue({ messageId: "hb", chatId: "-100999000111" });
+      const reply = vi.fn().mockResolvedValue({ text: marker });
+      await runHeartbeatOnce({
+        cfg,
+        agentId: "main",
+        sessionKey,
+        source: "restart-sentinel",
+        intent: "immediate",
+        reason: "wake",
+        deps: { getReplyFromConfig: reply, telegram: sendTelegram },
+      });
+      expect(sendTelegram).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(sendTelegram.mock.calls[0])).toContain(marker);
+    });
+  });
 });
 
 async function publishedAssistantTexts(storePath: string, sessionKey: string, needle: string) {

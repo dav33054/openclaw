@@ -38,7 +38,7 @@ import { formatErrorMessage } from "./errors.js";
 import { isWithinActiveHours } from "./heartbeat-active-hours.js";
 import { tryResolveAmbientHeartbeatAgentId } from "./heartbeat-agent-resolution.js";
 import { resolveHeartbeatForWake, type HeartbeatConfig } from "./heartbeat-config.js";
-import { isExecCompletionEvent } from "./heartbeat-events-filter.js";
+import { isExecCompletionEvent, isRestartContinuationEvent } from "./heartbeat-events-filter.js";
 import { emitHeartbeatEvent } from "./heartbeat-events.js";
 import { heartbeatLog as log } from "./heartbeat-log.js";
 import { shouldUseHeartbeatResponseToolPrompt } from "./heartbeat-runner-config.js";
@@ -363,10 +363,15 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
   const projectionSessionKey = run.kind === "isolated" ? run.baseSessionKey : sessionKey;
   // Capture the client-owned generation before routing can await. The inspected
   // completion queue owns publication eligibility, not the coalesced wake source.
+  // Session-owned work: a background command completion, or the continuation of a turn
+  // interrupted by a Gateway restart. Both answer the session that owns them.
+  const isSessionOwnedEvent = (event: (typeof preflight.pendingEventEntries)[number]) =>
+    isExecCompletionEvent(event.text) ||
+    (wake.wakeSource === "restart-sentinel" && isRestartContinuationEvent(event));
   const projectionCandidate =
     scheduledTasks.length === 0 &&
     preflight.shouldInspectPendingEvents &&
-    preflight.pendingEventEntries.some((event) => isExecCompletionEvent(event.text)) &&
+    preflight.pendingEventEntries.some(isSessionOwnedEvent) &&
     !preflight.session.suppressOriginatingContext &&
     !isInternalSessionEffectsKey(projectionSessionKey) &&
     conversationEntry?.delivery?.kind === "internal" &&
@@ -405,7 +410,7 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
   // see a projection target the resolver already declined to deliver to.
   const internalProjection =
     resolvedDelivery.reason === "target-none" ? undefined : projectionCandidate;
-  // A completion owned by an internal session (the same eligibility as the routeless
+  // Session-owned work in an internal session (the same eligibility as the routeless
   // projection above: Control UI/WebChat and other operator-owned internal sessions)
   // answers in that session. The heartbeat target is for heartbeat output and must not
   // capture it. Mixed batches keep the resolved route for their other events. If the
@@ -414,7 +419,7 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
   const sessionOwnedCompletion =
     internalProjection !== undefined &&
     preflight.pendingEventEntries.length > 0 &&
-    preflight.pendingEventEntries.every((event) => isExecCompletionEvent(event.text));
+    preflight.pendingEventEntries.every(isSessionOwnedEvent);
   const delivery: typeof resolvedDelivery = sessionOwnedCompletion
     ? { ...resolvedDelivery, channel: "none", to: undefined, reason: "session-owned-completion" }
     : resolvedDelivery;
