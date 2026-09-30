@@ -65,7 +65,10 @@ describe("Scheduled Task settlement", () => {
           if (exe.endsWith("taskkill.exe")) {
             exited = true;
           }
-          if (args?.includes("-EncodedCommand")) {
+          if (
+            args?.includes("-EncodedCommand") ||
+            (args?.join(" ") ?? "").includes("Schedule.Service")
+          ) {
             ready =
               settles &&
               exited &&
@@ -136,7 +139,7 @@ describe("Scheduled Task settlement", () => {
         options.assertDispatchCurrent();
         readGatewayOwnerLease.mockReturnValue(undefined);
         spawnSync.mockImplementation((_exe, args) =>
-          args?.includes("-EncodedCommand")
+          args?.includes("-EncodedCommand") || (args?.join(" ") ?? "").includes("Schedule.Service")
             ? spawnSyncResult(
                 JSON.stringify({
                   state: 1,
@@ -176,7 +179,10 @@ describe("Scheduled Task settlement", () => {
       });
       readGatewayOwnerLease.mockImplementation(() => (originalAlive ? GATEWAY_OWNER : undefined));
       spawnSync.mockImplementation((exe, args) => {
-        if (args?.includes("-EncodedCommand")) {
+        if (
+          args?.includes("-EncodedCommand") ||
+          (args?.join(" ") ?? "").includes("Schedule.Service")
+        ) {
           return spawnSyncResult(
             JSON.stringify({
               state: 4,
@@ -251,7 +257,10 @@ describe("Scheduled Task settlement", () => {
           return push(...calls);
         });
         spawnSync.mockImplementation((exe, args, options) => {
-          if (args?.includes("-EncodedCommand")) {
+          if (
+            args?.includes("-EncodedCommand") ||
+            (args?.join(" ") ?? "").includes("Schedule.Service")
+          ) {
             if (!prepared) {
               prepared = true;
               return scheduledTaskProbeResult(4);
