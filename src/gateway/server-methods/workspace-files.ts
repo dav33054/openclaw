@@ -13,8 +13,8 @@ import { resolveToCwd as resolveSessionToolPathToCwd } from "../../agents/sessio
 import { insideGitCheckout } from "../../agents/worktrees/git.js";
 import { FsSafeError } from "../../infra/fs-safe.js";
 import { isPathInside } from "../../infra/path-guards.js";
-import { WORKSPACE_PREVIEW_MAX_BYTES } from "../workspace-file-limits.js";
 import { classifyMediaReferenceSource } from "../../media/media-reference.js";
+import { WORKSPACE_PREVIEW_MAX_BYTES } from "../workspace-file-limits.js";
 import {
   decodeUtf8Strict,
   listWorkspacePath,
