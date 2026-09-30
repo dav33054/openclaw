@@ -4,9 +4,18 @@ import type {
   Context,
   Model,
   SimpleStreamOptions,
-  StreamFunction,
   StreamOptions,
 } from "@openclaw/llm-core";
+import { bindDeferredAssistantMessageEventStream } from "@openclaw/llm-core/event-stream";
+
+type ApiProviderStreamFunction<
+  TApi extends Api = Api,
+  TOptions extends StreamOptions = StreamOptions,
+> = (
+  model: Model<TApi>,
+  context: Context,
+  options?: TOptions,
+) => AssistantMessageEventStreamContract | Promise<AssistantMessageEventStreamContract>;
 
 /** Runtime stream adapter signature stored in the API provider registry. */
 export type ApiStreamFunction = (
@@ -22,6 +31,15 @@ export type ApiStreamSimpleFunction = (
   options?: SimpleStreamOptions,
 ) => AssistantMessageEventStreamContract;
 
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "then" in value &&
+    typeof value.then === "function"
+  );
+}
+
 /** Provider implementation registered by core or plugins for a specific model API. */
 export interface ApiProvider<
   TApi extends Api = Api,
@@ -30,9 +48,9 @@ export interface ApiProvider<
   /** Model API id this provider handles. */
   api: TApi;
   /** Full streaming adapter for callers that already own structured options. */
-  stream: StreamFunction<TApi, TOptions>;
+  stream: ApiProviderStreamFunction<TApi, TOptions>;
   /** Simple streaming adapter used by agent and plugin runtime defaults. */
-  streamSimple: StreamFunction<TApi, SimpleStreamOptions>;
+  streamSimple: ApiProviderStreamFunction<TApi, SimpleStreamOptions>;
 }
 
 /** Type-erased provider returned by a registry after API guards are installed. */
@@ -49,13 +67,19 @@ type RegisteredApiProviderEntry = {
 
 function wrapStream<TApi extends Api, TOptions extends StreamOptions>(
   api: TApi,
-  stream: StreamFunction<TApi, TOptions>,
+  stream: ApiProviderStreamFunction<TApi, TOptions>,
 ): ApiStreamFunction {
   return (model, context, options) => {
     if (model.api !== api) {
       throw new Error(`Mismatched api: ${model.api} expected ${api}`);
     }
-    return stream(model as Model<TApi>, context, options as TOptions);
+    const started = stream(model as Model<TApi>, context, options as TOptions);
+    if (isPromiseLike(started)) {
+      return bindDeferredAssistantMessageEventStream(Promise.resolve(started), (operation) =>
+        operation(),
+      );
+    }
+    return started;
   };
 }
 

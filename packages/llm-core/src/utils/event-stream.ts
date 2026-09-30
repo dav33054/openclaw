@@ -38,6 +38,155 @@ export function getEventStreamCompletion(stream: object): Promise<unknown> | und
   return eventStreamCompletions.get(stream);
 }
 
+/** Bind consumer operations without mutating provider streams or losing producer settlement. */
+export function bindAssistantMessageEventStream(
+  source: AssistantMessageEventStreamContract,
+  run: <T>(operation: () => T) => T,
+): AssistantMessageEventStreamContract {
+  const push = source.push.bind(source);
+  const end = source.end.bind(source);
+  const result = source.result.bind(source);
+  const iterate = source[Symbol.asyncIterator].bind(source);
+  const bound: AssistantMessageEventStreamContract = {
+    push: (event) => run(() => push(event)),
+    end: (message) => run(() => end(message)),
+    result: () => run(result),
+    [Symbol.asyncIterator]: () => {
+      const iterator = run(iterate);
+      const finish = iterator.return?.bind(iterator);
+      const fail = iterator.throw?.bind(iterator);
+      return {
+        [Symbol.asyncIterator]() {
+          return this;
+        },
+        next: (...args) => run(() => iterator.next(...args)),
+        ...(finish ? { return: (value?: unknown) => run(() => finish(value)) } : {}),
+        ...(fail ? { throw: (error?: unknown) => run(() => fail(error)) } : {}),
+      };
+    },
+  };
+  const completion = eventStreamCompletions.get(source);
+  if (completion) {
+    eventStreamCompletions.set(bound, completion);
+  }
+  return bound;
+}
+
+/** Bind a provider stream that is created asynchronously behind a synchronous stream facade. */
+export function bindDeferredAssistantMessageEventStream(
+  source: Promise<AssistantMessageEventStreamContract>,
+  run: <T>(operation: () => T) => T,
+): AssistantMessageEventStreamContract {
+  const boundSource = source.then((stream) =>
+    run(() => bindAssistantMessageEventStream(stream, run)),
+  );
+  let rejectMutation!: (error: unknown) => void;
+  const mutationFailure = new Promise<never>((_resolve, reject) => {
+    rejectMutation = reject;
+  });
+  void mutationFailure.catch(() => undefined);
+  let mutationFailed = false;
+  let mutationError: unknown;
+  const throwIfMutationFailed = () => {
+    if (mutationFailed) {
+      throw mutationError;
+    }
+  };
+  const applyMutation = (
+    stream: AssistantMessageEventStreamContract,
+    operation: (stream: AssistantMessageEventStreamContract) => void,
+  ) => {
+    try {
+      throwIfMutationFailed();
+      operation(stream);
+    } catch (error) {
+      mutationFailed = true;
+      mutationError = error;
+      rejectMutation(error);
+      throw error;
+    }
+  };
+  let resolvedSource: AssistantMessageEventStreamContract | undefined;
+  const pendingMutations: Array<(stream: AssistantMessageEventStreamContract) => void> = [];
+  const ready = boundSource.then((stream) => {
+    resolvedSource = stream;
+    for (const mutation of pendingMutations) {
+      applyMutation(stream, mutation);
+    }
+    pendingMutations.length = 0;
+    return stream;
+  });
+  void ready.catch(() => undefined);
+  const mutate = (operation: (stream: AssistantMessageEventStreamContract) => void) => {
+    if (resolvedSource) {
+      applyMutation(resolvedSource, operation);
+      return;
+    }
+    pendingMutations.push(operation);
+  };
+  let fallbackResult: Promise<AssistantMessage> | undefined;
+  const result = async () => {
+    throwIfMutationFailed();
+    const stream = await ready;
+    throwIfMutationFailed();
+    const completion = eventStreamCompletions.get(stream);
+    if (completion) {
+      return await Promise.race([stream.result(), mutationFailure]);
+    }
+    fallbackResult ??= Promise.resolve(run(() => stream.result()));
+    return await Promise.race([fallbackResult, mutationFailure]);
+  };
+  const bound: AssistantMessageEventStreamContract = {
+    push(event) {
+      mutate((stream) => stream.push(event));
+    },
+    end(message) {
+      mutate((stream) => stream.end(message));
+    },
+    result,
+    [Symbol.asyncIterator]() {
+      let iterator: AsyncIterator<AssistantMessageEvent> | undefined;
+      const getIterator = async () => {
+        iterator ??= (await ready)[Symbol.asyncIterator]();
+        return iterator;
+      };
+      return {
+        [Symbol.asyncIterator]() {
+          return this;
+        },
+        async next(...args) {
+          throwIfMutationFailed();
+          return await Promise.race([(await getIterator()).next(...args), mutationFailure]);
+        },
+        async return(value?: unknown) {
+          throwIfMutationFailed();
+          const sourceIterator = await getIterator();
+          return await Promise.race([
+            sourceIterator.return ? sourceIterator.return(value) : { done: true as const, value },
+            mutationFailure,
+          ]);
+        },
+        async throw(error?: unknown) {
+          throwIfMutationFailed();
+          const sourceIterator = await getIterator();
+          if (!sourceIterator.throw) {
+            throw error;
+          }
+          return await Promise.race([sourceIterator.throw(error), mutationFailure]);
+        },
+      };
+    },
+  };
+  const completion = Promise.race([
+    ready.then((stream) => eventStreamCompletions.get(stream) ?? result()),
+    mutationFailure,
+  ]);
+  // Iteration/result consumers may never inspect producer completion separately.
+  void completion.catch(() => undefined);
+  eventStreamCompletions.set(bound, completion);
+  return bound;
+}
+
 /** Generic async-iterable event stream with a separately awaited final result. */
 export class EventStream<T, R = T> implements AsyncIterable<T> {
   protected queue: (T | undefined)[] = [];
