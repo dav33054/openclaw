@@ -1,4 +1,5 @@
 import path from "node:path";
+import { setImmediate } from "node:timers/promises";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveStateDir } from "../../config/paths.js";
 import {
@@ -79,14 +80,22 @@ export async function discoverRestartRecoveryStoreTargets(params: {
       });
     }
   }
-  return storeTargets
-    .filter(
-      (target) =>
-        !readAgentDatabaseAdmissionRefusal(target.agentId, { env }) &&
-        (!params.statuses ||
-          hasSessionEntriesByStatusReadOnly({ ...target, env }, params.statuses)),
-    )
-    .toSorted(
-      (a, b) => a.storePath.localeCompare(b.storePath) || a.agentId.localeCompare(b.agentId),
-    );
+  // Probing every store synchronously (admission refusal + status read) blocks the
+  // event loop for the whole chain; large fleets froze startup for the combined
+  // length of all probes (#149935). Probe stores in the same order but yield one
+  // macrotask between targets so timers queued before the scan can run mid-scan.
+  const eligibleTargets: SessionStoreTarget[] = [];
+  for (const target of storeTargets) {
+    await setImmediate();
+    if (
+      readAgentDatabaseAdmissionRefusal(target.agentId, { env }) ||
+      (params.statuses && !hasSessionEntriesByStatusReadOnly({ ...target, env }, params.statuses))
+    ) {
+      continue;
+    }
+    eligibleTargets.push(target);
+  }
+  return eligibleTargets.toSorted(
+    (a, b) => a.storePath.localeCompare(b.storePath) || a.agentId.localeCompare(b.agentId),
+  );
 }
