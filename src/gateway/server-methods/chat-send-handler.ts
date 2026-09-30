@@ -215,6 +215,7 @@ async function handleChatSendWithOptions(
     await terminalizeRestartSafeChatAdmission({
       admittedSessionId,
       clientRunId,
+      controlUiVisible: restartSafeAdmission?.controlUiVisible ?? false,
       sessionKey,
       startedAt: admissionStartedAt,
       storePath,

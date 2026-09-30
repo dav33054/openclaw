@@ -178,7 +178,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
             cleanupAdmittedRun: vi.fn(),
             lifecycleGeneration: "test-generation",
             restartSafeAdmission: restartSafe
-              ? { requestFingerprint: "test-fingerprint" }
+              ? { controlUiVisible: true, requestFingerprint: "test-fingerprint" }
               : undefined,
           },
           context: {
@@ -212,6 +212,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
               ...target,
               admittedSessionId: target.sessionId,
               clientRunId: runId,
+              controlUiVisible: true,
               startedAt: 1_000,
             }),
           userTurnRecorder: { hasPersisted: () => userPersisted, isBlocked: () => false },
@@ -330,6 +331,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
             ...target,
             admittedSessionId: target.sessionId,
             clientRunId: runId,
+            controlUiVisible: true,
             startedAt: 1_000,
             error: "Late duplicate rejection",
             status: "failed" as const,
@@ -368,6 +370,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
             ...target,
             admittedSessionId: "settled-session",
             clientRunId: "settled-run",
+            controlUiVisible: true,
             startedAt: 1_000,
             status: "failed",
             error: "Worker unavailable",
