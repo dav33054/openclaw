@@ -22,6 +22,9 @@ export function parseGeneratedAsyncAnswer(
   question: AsyncQuestions,
   message: string,
 ): Map<string, QuestionDraft> | null {
+  if (!message.startsWith("> ")) {
+    return null;
+  }
   let offset = 0;
   const answers: string[] = [];
   for (let index = 0; index < question.questions.length; index += 1) {
