@@ -29,6 +29,7 @@ import {
   getPluginRuntimeGatewayRequestScope,
   withPluginRuntimeGatewayContextResolver,
 } from "../../plugins/runtime/gateway-request-scope.js";
+import type { RuntimeContextFragment } from "../internal-runtime-context.js";
 import {
   captureGatewayToolCallerAssertion,
   getGatewayToolCallerIdentity,
@@ -67,6 +68,8 @@ type AgentToolGatewayRequest = Pick<
 > & {
   agentRunTracking?: GatewayAgentRunTaskOwner;
   agentToolCaller?: TrustedAgentToolCaller;
+  /** Current-turn context for an agent run; transport appends its text to the system prompt. */
+  runtimeContextFragments?: RuntimeContextFragment[];
   /** Target policy checked at the mutation boundary, not after its own committed change. */
   sessionMutationCommitGuard?: () => void;
 };
@@ -248,12 +251,32 @@ async function callAgentToolGatewayRequestBound<T>(
     const {
       agentRunTracking: _agentRunTracking,
       agentToolCaller: _agentToolCaller,
+      runtimeContextFragments,
       sessionMutationCommitGuard: _sessionMutationCommitGuard,
       ...wireRequest
     } = request;
+    const wireParams = wireRequest.params;
+    // The wire has no runtime-only turn carrier, and `message` becomes the persisted user turn.
+    const params =
+      method === "agent" &&
+      runtimeContextFragments?.length &&
+      typeof wireParams === "object" &&
+      wireParams !== null
+        ? {
+            ...wireParams,
+            extraSystemPrompt: [
+              "extraSystemPrompt" in wireParams && typeof wireParams.extraSystemPrompt === "string"
+                ? wireParams.extraSystemPrompt
+                : undefined,
+              ...runtimeContextFragments.map((fragment) => fragment.text),
+            ]
+              .filter(Boolean)
+              .join("\n\n"),
+          }
+        : wireParams;
     return await runBoundInProcessGatewayCall(
       boundGateway,
-      () => callGateway<T>({ ...wireRequest, method }),
+      () => callGateway<T>({ ...wireRequest, params, method }),
       assertCurrent,
       revalidateOnCompletion,
     );
@@ -278,6 +301,9 @@ async function callAgentToolGatewayRequestBound<T>(
     operatorRoleActor: { kind: "system" as const },
     ...(request.agentRunTracking ? { agentRunTracking: request.agentRunTracking } : {}),
     ...(request.agentToolCaller ? { agentToolCaller: request.agentToolCaller } : {}),
+    ...(request.runtimeContextFragments
+      ? { runtimeContextFragments: request.runtimeContextFragments }
+      : {}),
     syntheticScopes: scopes,
     syntheticScopeMode,
     ...(request.expectFinal !== undefined ? { expectFinal: request.expectFinal } : {}),

@@ -11,6 +11,7 @@ import {
   expect,
   it,
   type Mock,
+  vi,
 } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
@@ -308,6 +309,67 @@ describe("sessions_send gateway loopback", () => {
         }),
       }),
     );
+  });
+
+  it("keeps the reply turn counter out of the recorded turn over transport", async () => {
+    const requester = "agent:main:main";
+    const target = "agent:main:dashboard:a2a-peer";
+    await writeSessionStore({
+      entries: {
+        [requester]: { sessionId: "a2a-requester", updatedAt: Date.now() },
+        [target]: { sessionId: "a2a-target", updatedAt: Date.now() },
+      },
+    });
+    const steps: AgentCommandGatewayIngressOpts[] = [];
+    const spy = agentCommandMock as unknown as Mock<
+      (opts: AgentCommandGatewayIngressOpts) => Promise<void>
+    >;
+    spy.mockImplementation(async (opts) => {
+      steps.push(opts);
+      await opts.userTurnTranscriptRecorder?.persistApproved();
+      await emitLifecycleAssistantReply({
+        opts,
+        defaultSessionId: "a2a-target",
+        resolveText: (extraSystemPrompt) =>
+          extraSystemPrompt?.includes("Agent-to-agent reply step")
+            ? "REPLY_SKIP"
+            : extraSystemPrompt?.includes("Agent-to-agent announce step")
+              ? "ANNOUNCE_SKIP"
+              : "peer response",
+      });
+    });
+    const tool = getSessionsSendTool({
+      agentSessionKey: requester,
+      config: { tools: { sessions: { visibility: "all" } } },
+    });
+
+    await tool.execute("call-a2a-transport", {
+      sessionKey: target,
+      message: "hi",
+      timeoutSeconds: 5,
+    });
+    await vi.waitFor(
+      () =>
+        expect(
+          steps.some((step) => step.extraSystemPrompt?.includes("Agent-to-agent announce step")),
+        ).toBe(true),
+      { timeout: SESSION_SEND_E2E_TIMEOUT_MS },
+    );
+
+    const replyStep = steps.find((step) =>
+      step.extraSystemPrompt?.includes("Agent-to-agent reply step"),
+    );
+    expect(replyStep?.sessionKey).toBe(requester);
+    const modelInput = [
+      replyStep?.extraSystemPrompt,
+      replyStep?.message,
+      ...(replyStep?.runtimeContextFragments ?? []).map((fragment) => fragment.text),
+    ].join("\n");
+    expect(modelInput).toContain("Agent-to-agent reply turn 1 of 5.");
+    const recorded = await replyStep?.userTurnTranscriptRecorder?.resolveMessage();
+    expect(recorded).toMatchObject({ role: "user", content: replyStep?.message });
+    expect(replyStep?.message).toMatch(/peer response$/);
+    expect(replyStep?.message).not.toContain("turn 1 of 5");
   });
 
   it(
