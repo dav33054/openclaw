@@ -231,6 +231,127 @@ describe("doctor Skill Workshop collection backup migration", () => {
     ).resolves.toMatchObject({ legacyBackupRootCount: 0 });
   });
 
+  it("ignores a retained legacy backup after its history-only copy survives workspace relocation", async () => {
+    const originalWorkspaceDir = await fs.realpath(
+      await tempDirs.make("openclaw-workshop-archived-backup-workspace-"),
+    );
+    const backupContent =
+      "---\nname: relocated-history-skill\ndescription: Legacy backup\n---\n\n# Before cleanup\n";
+    const resultContent =
+      "---\nname: relocated-history-skill\ndescription: Current skill\n---\n\n# After cleanup\n";
+    const backupId = "2026-09-01T00-00-00.000Z-relocated1";
+    const legacyRoot = await seedLegacyCollectionBackup({
+      workspaceDir: originalWorkspaceDir,
+      backupId,
+      backupContent,
+      resultContent,
+    });
+    const originalConfig = {
+      agents: { list: [{ id: "main", default: true, workspace: originalWorkspaceDir }] },
+    };
+
+    const migration = await migrateLegacySkillWorkshopProposals({
+      config: originalConfig,
+      env: testState.env,
+    });
+    expect(migration.changes.join("\n")).toContain("migrated 1 legacy collection backup root");
+    await expect(
+      restoreLatestSkillCollectionBackup({
+        workspaceDir: originalWorkspaceDir,
+        config: originalConfig,
+        agentId: "main",
+        env: testState.env,
+      }),
+    ).rejects.toThrow("history-only");
+    await expect(fs.access(legacyRoot)).resolves.toBeUndefined();
+
+    const currentWorkspaceDir = await fs.realpath(
+      await tempDirs.make("openclaw-workshop-relocated-backup-workspace-"),
+    );
+    const currentConfig = {
+      agents: { list: [{ id: "main", default: true, workspace: currentWorkspaceDir }] },
+    };
+    await expect(
+      inspectLegacySkillWorkshopMigration({ config: currentConfig, env: testState.env }),
+    ).resolves.toMatchObject({ legacyBackupRootCount: 0, preservedLegacyBackupRootCount: 0 });
+  });
+
+  it.each(["missing", "different"] as const)(
+    "keeps a retained legacy backup when its history-only copy is %s",
+    async (archiveContent) => {
+      const originalWorkspaceDir = await fs.realpath(
+        await tempDirs.make("openclaw-workshop-incomplete-archive-workspace-"),
+      );
+      const backupId = `2026-09-01T00-00-00.000Z-incomplete-${archiveContent}`;
+      const legacyRoot = await seedLegacyCollectionBackup({
+        workspaceDir: originalWorkspaceDir,
+        backupId,
+        backupContent:
+          "---\nname: incomplete-history-skill\ndescription: Legacy backup\n---\n\n# Before cleanup\n",
+        resultContent:
+          "---\nname: incomplete-history-skill\ndescription: Current skill\n---\n\n# After cleanup\n",
+      });
+      const originalConfig = {
+        agents: { list: [{ id: "main", default: true, workspace: originalWorkspaceDir }] },
+      };
+      const migration = await migrateLegacySkillWorkshopProposals({
+        config: originalConfig,
+        env: testState.env,
+      });
+      expect(migration.changes.join("\n")).toContain("migrated 1 legacy collection backup root");
+
+      const archivedSkillDir = path.join(
+        resolveSkillCollectionBackupRoot(originalConfig, "main", testState.env),
+        backupId,
+        "history",
+        "workspace",
+        "skills",
+        "legacy-collection-skill",
+      );
+      if (archiveContent === "missing") {
+        await fs.rm(archivedSkillDir, { recursive: true });
+      } else {
+        await fs.writeFile(path.join(archivedSkillDir, "SKILL.md"), "changed archive content\n");
+      }
+
+      const currentWorkspaceDir = await fs.realpath(
+        await tempDirs.make("openclaw-workshop-incomplete-current-workspace-"),
+      );
+      const currentConfig = {
+        agents: { list: [{ id: "main", default: true, workspace: currentWorkspaceDir }] },
+      };
+      await expect(
+        inspectLegacySkillWorkshopMigration({ config: currentConfig, env: testState.env }),
+      ).resolves.toMatchObject({ legacyBackupRootCount: 1, preservedLegacyBackupRootCount: 1 });
+      await expect(fs.access(path.join(legacyRoot, backupId))).resolves.toBeUndefined();
+    },
+  );
+
+  it("keeps warning for an unarchived legacy backup after workspace relocation", async () => {
+    const originalWorkspaceDir = await fs.realpath(
+      await tempDirs.make("openclaw-workshop-unarchived-backup-workspace-"),
+    );
+    const currentWorkspaceDir = await fs.realpath(
+      await tempDirs.make("openclaw-workshop-unarchived-current-workspace-"),
+    );
+    const backupId = "2026-09-01T00-00-00.000Z-unarchived1";
+    await seedLegacyCollectionBackup({
+      workspaceDir: originalWorkspaceDir,
+      backupId,
+      backupContent:
+        "---\nname: unarchived-history-skill\ndescription: Legacy backup\n---\n\n# Before cleanup\n",
+      resultContent:
+        "---\nname: unarchived-history-skill\ndescription: Current skill\n---\n\n# After cleanup\n",
+    });
+    const config = {
+      agents: { list: [{ id: "main", default: true, workspace: currentWorkspaceDir }] },
+    };
+
+    await expect(
+      inspectLegacySkillWorkshopMigration({ config, env: testState.env }),
+    ).resolves.toMatchObject({ legacyBackupRootCount: 1, preservedLegacyBackupRootCount: 1 });
+  });
+
   it.each([
     { createdBy: "cli" as const, matchingReview: true },
     { createdBy: "skill-workshop" as const, matchingReview: true },
