@@ -82,15 +82,13 @@ it.each(["delayed-success", "opaque-steer", "wait-before-admission", "yield-rece
       CodexNativeSubagentCompletionDelivery.prototype,
       "deliverPending",
     );
-    observeAttempt.mockImplementation(function (
-      this: CodexNativeSubagentCompletionDelivery,
-      state,
-      child,
-    ) {
-      const attempt = originalDelivery.call(this, state, child);
-      attempts.add(attempt);
-      return attempt;
-    });
+    observeAttempt.mockImplementation(
+      function (this: CodexNativeSubagentCompletionDelivery, state, child) {
+        const attempt = originalDelivery.call(this, state, child);
+        attempts.add(attempt);
+        return attempt;
+      },
+    );
     const settleCompletionAttempts = async () => {
       // Receipts settle independently of notification dispatch; join their owner before assertions.
       while (attempts.size > 0) {

@@ -284,25 +284,23 @@ describe("installPackageDir rollback", () => {
         const prototype = Object.getPrototypeOf(await fsSafeRoot(installBaseDir)) as Root;
         // oxlint-disable-next-line typescript/unbound-method -- Called below with the intercepted Root receiver to preserve its path and mutation authority.
         const remove = prototype.remove;
-        vi.spyOn(prototype, "remove").mockImplementation(async function (
-          this: Root,
-          target,
-          options,
-        ) {
-          const current = fsSync.lstatSync(path.dirname(path.join(this.rootReal, target)), {
-            bigint: true,
-            throwIfNoEntry: false,
-          });
-          if (
-            !injected &&
-            current?.dev === publishedIdentity.dev &&
-            current.ino === publishedIdentity.ino
-          ) {
-            injected = true;
-            throw ioError;
-          }
-          await remove.call(this, target, options);
-        });
+        vi.spyOn(prototype, "remove").mockImplementation(
+          async function (this: Root, target, options) {
+            const current = fsSync.lstatSync(path.dirname(path.join(this.rootReal, target)), {
+              bigint: true,
+              throwIfNoEntry: false,
+            });
+            if (
+              !injected &&
+              current?.dev === publishedIdentity.dev &&
+              current.ino === publishedIdentity.ino
+            ) {
+              injected = true;
+              throw ioError;
+            }
+            await remove.call(this, target, options);
+          },
+        );
       } else {
         vi.spyOn(fs, "rename").mockImplementation((...args: Parameters<typeof fs.rename>) => {
           if (

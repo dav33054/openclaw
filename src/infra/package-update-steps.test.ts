@@ -759,43 +759,39 @@ describe("runGlobalPackageUpdateSteps", () => {
       await handle.close();
       // oxlint-disable-next-line typescript/unbound-method -- Called below with the intercepted FileHandle receiver so mode changes retain descriptor custody.
       const realHandleChmod = handlePrototype.chmod;
-      const chmodSpy = vi.spyOn(handlePrototype, "chmod").mockImplementation(async function (
-        this: FileHandle,
-        mode,
-      ) {
-        rejectRestoredMode(mode);
-        await realHandleChmod.call(this, mode);
-      });
-      const copySpy = vi.spyOn(prototype, "copyIn").mockImplementation(async function (
-        this: Root,
-        target,
-        source,
-        options,
-      ) {
-        const destination = path.join(this.rootReal, target);
-        const restoring =
-          typeof source === "string" &&
-          isLauncherStage(destination) &&
-          path.basename(path.dirname(source)).startsWith(".openclaw.shim-backup-");
-        if (restoring) {
-          restoringShim = destination;
-        }
-        try {
-          if (
-            (failure === "backup copy" && source === targetShim) ||
-            (failure !== "backup copy" && source === stagedShimForFailure) ||
-            (failure === "shim restore" && restoring)
-          ) {
-            copyRefusals += 1;
-            throw createFsError("EACCES", `${failure} failed`);
-          }
-          await realCopy.call(this, target, source, options);
-        } finally {
+      const chmodSpy = vi
+        .spyOn(handlePrototype, "chmod")
+        .mockImplementation(async function (this: FileHandle, mode) {
+          rejectRestoredMode(mode);
+          await realHandleChmod.call(this, mode);
+        });
+      const copySpy = vi
+        .spyOn(prototype, "copyIn")
+        .mockImplementation(async function (this: Root, target, source, options) {
+          const destination = path.join(this.rootReal, target);
+          const restoring =
+            typeof source === "string" &&
+            isLauncherStage(destination) &&
+            path.basename(path.dirname(source)).startsWith(".openclaw.shim-backup-");
           if (restoring) {
-            restoringShim = undefined;
+            restoringShim = destination;
           }
-        }
-      });
+          try {
+            if (
+              (failure === "backup copy" && source === targetShim) ||
+              (failure !== "backup copy" && source === stagedShimForFailure) ||
+              (failure === "shim restore" && restoring)
+            ) {
+              copyRefusals += 1;
+              throw createFsError("EACCES", `${failure} failed`);
+            }
+            await realCopy.call(this, target, source, options);
+          } finally {
+            if (restoring) {
+              restoringShim = undefined;
+            }
+          }
+        });
       const symlinkSpy = vi.spyOn(fs, "symlink").mockImplementation(async (...args) => {
         if (failure === "symlink copy" && args[0] === newLink && isLauncherStage(String(args[1]))) {
           symlinkRefusals += 1;

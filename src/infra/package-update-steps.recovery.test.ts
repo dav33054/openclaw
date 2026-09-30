@@ -646,22 +646,19 @@ describe("package update recovery safety", () => {
       // oxlint-disable-next-line typescript/unbound-method -- Called below with the intercepted Root receiver to preserve its path and mutation authority.
       const copy = prototype.copyIn;
       let injections = 0;
-      const copySpy = vi.spyOn(prototype, "copyIn").mockImplementation(async function (
-        this: Root,
-        destination,
-        source,
-        options,
-      ) {
-        if (
-          typeof source === "string" &&
-          path.basename(source) === "openclaw.cmd" &&
-          path.basename(path.dirname(source)).startsWith(".openclaw.shim-backup-")
-        ) {
-          injections += 1;
-          throw Object.assign(new Error("launcher restoration denied"), { code: "EACCES" });
-        }
-        await copy.call(this, destination, source, options);
-      });
+      const copySpy = vi
+        .spyOn(prototype, "copyIn")
+        .mockImplementation(async function (this: Root, destination, source, options) {
+          if (
+            typeof source === "string" &&
+            path.basename(source) === "openclaw.cmd" &&
+            path.basename(path.dirname(source)).startsWith(".openclaw.shim-backup-")
+          ) {
+            injections += 1;
+            throw Object.assign(new Error("launcher restoration denied"), { code: "EACCES" });
+          }
+          await copy.call(this, destination, source, options);
+        });
       let result: Awaited<ReturnType<typeof runGlobalPackageUpdateSteps>>;
       try {
         result = await runGlobalPackageUpdateSteps({

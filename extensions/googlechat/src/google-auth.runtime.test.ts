@@ -9,22 +9,24 @@ const mocks = vi.hoisted(() => ({
     hostnameAllowlist: hosts,
   })),
   fetchWithSsrFGuard: vi.fn(),
-  gaxiosCtor: vi.fn(function MockGaxios(
-    this: {
-      defaults: Record<string, unknown>;
-      interceptors: {
-        request: { add: ReturnType<typeof vi.fn> };
-        response: { add: ReturnType<typeof vi.fn> };
+  gaxiosCtor: vi.fn(
+    function MockGaxios(
+      this: {
+        defaults: Record<string, unknown>;
+        interceptors: {
+          request: { add: ReturnType<typeof vi.fn> };
+          response: { add: ReturnType<typeof vi.fn> };
+        };
+      },
+      defaults,
+    ) {
+      this.defaults = defaults as Record<string, unknown>;
+      this.interceptors = {
+        request: { add: vi.fn() },
+        response: { add: vi.fn() },
       };
     },
-    defaults,
-  ) {
-    this.defaults = defaults as Record<string, unknown>;
-    this.interceptors = {
-      request: { add: vi.fn() },
-      response: { add: vi.fn() },
-    };
-  }),
+  ),
 }));
 
 vi.mock("openclaw/plugin-sdk/ssrf-runtime", () => ({

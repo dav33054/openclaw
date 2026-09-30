@@ -1098,11 +1098,11 @@ describe("native hook relay registry", () => {
       }
       // Hold successor startup, while keeping the retired listener and real
       // read-only locator lookup intact across the CLI registration deadline.
-      const listen = vi.spyOn(Server.prototype, "listen").mockImplementation(function (
-        this: Server,
-      ) {
-        return this;
-      });
+      const listen = vi
+        .spyOn(Server.prototype, "listen")
+        .mockImplementation(function (this: Server) {
+          return this;
+        });
       try {
         registerRelay({ relayId: first.relayId, runId: "run-successor", allowedEvents: [event] });
         const callGateway = vi.fn(async (opts: { params?: unknown }): Promise<never> => {
