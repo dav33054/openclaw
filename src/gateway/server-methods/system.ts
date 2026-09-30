@@ -17,11 +17,14 @@ import {
   validateSystemEventParams,
 } from "../../../packages/gateway-protocol/src/schema/system-event.js";
 import { listAgentIds } from "../../agents/agent-scope.js";
+import { getRuntimeAuthProfileStoreCredentialsRevision } from "../../agents/auth-profiles/runtime-snapshots.js";
+import type { UtilityCompletionRuntime } from "../../agents/utility-completion.js";
 import { readUtilityModelSetting } from "../../agents/utility-model-setting.js";
 import { resolveUtilityModelRefForAgent } from "../../agents/utility-model.js";
 import { tryResolveLegacyCompatibilityAgentId } from "../../config/legacy.default-agent-owner.js";
 import { resolveGatewayPort, resolveStateDir } from "../../config/paths.js";
 import { resolveSystemMainSessionTarget } from "../../config/sessions.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveAdvertisedLanHostCore } from "../../infra/advertised-lan-host.js";
 import { loadOrCreateProcessDeviceIdentityAsync } from "../../infra/device-identity-async.js";
 import { publicKeyRawBase64UrlFromPem } from "../../infra/device-identity.js";
@@ -37,6 +40,7 @@ import {
 } from "../../infra/system-event-ownership.js";
 import { enqueueSystemEvent, isSystemEventContextChanged } from "../../infra/system-events.js";
 import { listSystemPresence, updateSystemPresence } from "../../infra/system-presence.js";
+import { getActivePluginRegistryVersion } from "../../plugins/runtime.js";
 import { normalizeAgentId, resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { createPresenceRecipientProjection } from "../presence-projection.js";
 import { getGatewayProcessInstanceId } from "../process-instance.js";
@@ -52,11 +56,52 @@ let advertisedLanHostPromise: Promise<string | null> | null = null;
 let stateDiskSnapshot:
   | { stateDir: string; expiresAt: number; disk: ReturnType<typeof tryReadDiskSpace> }
   | undefined;
+// Utility route reads stored credential metadata and registered harnesses.
+// Re-resolve at once when the config, credential, or plugin registry generation
+// changes; the disk cadence bounds staleness from logins made outside this
+// process (e.g. a CLI's own login).
+let utilityRuntimeSnapshot:
+  | {
+      config: OpenClawConfig;
+      agentId: string;
+      credentialsRevision: number;
+      pluginRegistryVersion: number;
+      expiresAt: number;
+      runtime: Promise<UtilityCompletionRuntime | undefined>;
+    }
+  | undefined;
 // CPU identity belongs to this process; os.cpus() also reads every core's live timings.
 const cpuInfoSnapshot = (() => {
   const cpus = os.cpus();
   return { cpuCount: cpus.length, cpuModel: cpus[0]?.model.trim() || undefined };
 })();
+
+function resolveCachedUtilityRuntime(config: OpenClawConfig, agentId: string) {
+  const credentialsRevision = getRuntimeAuthProfileStoreCredentialsRevision();
+  const pluginRegistryVersion = getActivePluginRegistryVersion();
+  if (
+    !utilityRuntimeSnapshot ||
+    utilityRuntimeSnapshot.config !== config ||
+    utilityRuntimeSnapshot.agentId !== agentId ||
+    utilityRuntimeSnapshot.credentialsRevision !== credentialsRevision ||
+    utilityRuntimeSnapshot.pluginRegistryVersion !== pluginRegistryVersion ||
+    Date.now() >= utilityRuntimeSnapshot.expiresAt
+  ) {
+    utilityRuntimeSnapshot = {
+      config,
+      agentId,
+      credentialsRevision,
+      pluginRegistryVersion,
+      expiresAt: Date.now() + 30_000,
+      runtime: import("../../agents/utility-completion.js")
+        .then(({ resolveUtilityCompletionRuntimeForAgent }) =>
+          resolveUtilityCompletionRuntimeForAgent({ cfg: config, agentId }),
+        )
+        .catch(() => undefined),
+    };
+  }
+  return utilityRuntimeSnapshot.runtime;
+}
 
 function resolveCachedAdvertisedLanHost(): Promise<string | null> {
   // Route discovery may spawn a platform command. Keep the result process-stable
@@ -90,19 +135,29 @@ async function collectSystemInfo(context: GatewayRequestContext): Promise<System
     readSystemDisks(),
   ]);
   const soleAgentId = tryResolveLegacyCompatibilityAgentId(config);
-  const defaultAgentUtilityModel = soleAgentId
-    ? (() => {
-        const utilitySetting = readUtilityModelSetting(config, soleAgentId);
-        const utilityModel = resolveUtilityModelRefForAgent({ cfg: config, agentId: soleAgentId });
-        return utilitySetting.kind === "disabled"
-          ? ({ status: "disabled" } as const)
-          : utilitySetting.kind === "explicit"
-            ? ({ status: "configured", model: utilitySetting.modelRef } as const)
-            : utilityModel
-              ? ({ status: "auto", model: utilityModel } as const)
-              : ({ status: "unavailable" } as const);
-      })()
-    : ({ status: "unavailable" } as const);
+  const defaultAgentUtilityModel: SystemInfoResult["defaultAgentUtilityModel"] =
+    await (async () => {
+      if (!soleAgentId) {
+        return { status: "unavailable" } as const;
+      }
+      const utilitySetting = readUtilityModelSetting(config, soleAgentId);
+      if (utilitySetting.kind === "disabled") {
+        return { status: "disabled" } as const;
+      }
+      const model =
+        utilitySetting.kind === "explicit"
+          ? utilitySetting.modelRef
+          : resolveUtilityModelRefForAgent({ cfg: config, agentId: soleAgentId });
+      if (!model) {
+        return { status: "unavailable" } as const;
+      }
+      const runtime = await resolveCachedUtilityRuntime(config, soleAgentId);
+      return {
+        status: utilitySetting.kind === "explicit" ? "configured" : "auto",
+        model,
+        ...(runtime ? { runtime } : {}),
+      } as const;
+    })();
 
   return {
     machineName: await getMachineDisplayName(),

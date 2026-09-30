@@ -285,7 +285,10 @@ describe("models.list configured static entries", () => {
         view: "configured",
       }),
     ).resolves.toEqual({
-      defaultModels: { automaticUtilityModel: "openai/gpt-5.6-luna" },
+      defaultModels: {
+        automaticUtilityModel: "openai/gpt-5.6-luna",
+        utilityRuntime: { id: "openclaw", kind: "api", label: "OpenClaw Default" },
+      },
       models: [
         expect.objectContaining({
           id: "gpt-5.6-sol",
@@ -300,6 +303,27 @@ describe("models.list configured static entries", () => {
       ],
     });
   });
+
+  it.each([
+    ["openai/gpt-5.6-sol", { id: "openclaw", kind: "api", label: "OpenClaw Default" }],
+    ["", undefined],
+  ])(
+    "reports the route of the utility model in effect (utilityModel=%j)",
+    async (utilityModel, route) => {
+      const result = await listModels({
+        catalog: [],
+        staticEntries: [catalogEntry("gpt-5.6-sol", "openai-responses")],
+        cfg: {
+          agents: { defaults: { model: { primary: "openai/gpt-5.6-sol" }, utilityModel } },
+        } as OpenClawConfig,
+        view: "configured",
+      });
+      expect(result.defaultModels).toEqual({
+        automaticUtilityModel: "openai/gpt-5.6-luna",
+        ...(route ? { utilityRuntime: route } : {}),
+      });
+    },
+  );
 
   it("projects agent aliases onto inherited default and fallback catalog rows", async () => {
     await withEnvAsync(WITHOUT_OPENAI_ENV_AUTH, async () => {

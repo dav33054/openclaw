@@ -12,7 +12,27 @@ const mocks = vi.hoisted(() => ({
   resolveAdvertisedLanHostCore: vi.fn(async () => "192.168.1.20"),
   runCommandWithTimeout: vi.fn(),
   statfs: vi.fn(),
+  credentialsRevision: 0,
+  pluginRegistryVersion: 0,
+  resolveUtilityRuntime: vi.fn(),
 }));
+
+vi.mock("../../agents/auth-profiles/runtime-snapshots.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../agents/auth-profiles/runtime-snapshots.js")>()),
+  getRuntimeAuthProfileStoreCredentialsRevision: () => mocks.credentialsRevision,
+}));
+
+vi.mock("../../plugins/runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../plugins/runtime.js")>()),
+  getActivePluginRegistryVersion: () => mocks.pluginRegistryVersion,
+}));
+
+// Count route lookups while keeping the real owner's answers.
+vi.mock("../../agents/utility-completion.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../agents/utility-completion.js")>();
+  mocks.resolveUtilityRuntime.mockImplementation(actual.resolveUtilityCompletionRuntimeForAgent);
+  return { ...actual, resolveUtilityCompletionRuntimeForAgent: mocks.resolveUtilityRuntime };
+});
 
 vi.mock("../../process/exec.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../process/exec.js")>()),
@@ -156,6 +176,63 @@ describe("system.info", () => {
       cpuModel: payload.cpuModel,
       eventLoop: { cpuCoreRatio: 0.6 },
     });
+  });
+
+  it("reports the runtime the default agent's utility completions execute on", async () => {
+    const respond = vi.fn();
+    const config = {
+      agents: {
+        defaults: {
+          model: { primary: "anthropic/claude-opus-4-6" },
+          utilityModel: "anthropic/claude-haiku-4-5",
+          models: { "anthropic/claude-haiku-4-5": { agentRuntime: { id: "claude-cli" } } },
+        },
+      },
+    };
+    const request = {
+      params: {},
+      respond,
+      context: { getRuntimeConfig: () => config },
+    } as unknown as GatewayRequestHandlerOptions;
+    const handler = expectDefined(systemHandlers["system.info"], "system.info handler");
+    await handler(request);
+    const payload = respond.mock.calls[0]?.[1];
+    if (!validateSystemInfoResult(payload)) {
+      throw new Error("system.info returned an invalid payload");
+    }
+    expect(payload.defaultAgentUtilityModel).toEqual({
+      status: "configured",
+      model: "anthropic/claude-haiku-4-5",
+      runtime: { id: "claude-cli", kind: "cli", label: "Claude CLI" },
+    });
+  });
+
+  it.each([
+    ["stored credentials change", () => (mocks.credentialsRevision += 1)],
+    ["the plugin registry is replaced", () => (mocks.pluginRegistryVersion += 1)],
+  ])("re-resolves the utility route as soon as %s", async (_change, change) => {
+    const respond = vi.fn();
+    const config = {
+      agents: {
+        defaults: {
+          model: { primary: "anthropic/claude-opus-4-6" },
+          utilityModel: "anthropic/claude-haiku-4-5",
+        },
+      },
+    };
+    const request = {
+      params: {},
+      respond,
+      context: { getRuntimeConfig: () => config },
+    } as unknown as GatewayRequestHandlerOptions;
+    const handler = expectDefined(systemHandlers["system.info"], "system.info handler");
+    mocks.resolveUtilityRuntime.mockClear();
+    await handler(request);
+    await handler(request);
+    expect(mocks.resolveUtilityRuntime).toHaveBeenCalledTimes(1);
+    change();
+    await handler(request);
+    expect(mocks.resolveUtilityRuntime).toHaveBeenCalledTimes(2);
   });
 
   it.each([false, true])(
