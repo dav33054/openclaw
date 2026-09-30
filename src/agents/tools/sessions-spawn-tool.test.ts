@@ -23,7 +23,7 @@ import {
 } from "../subagents/swarm/swarm-code-mode.js";
 import { createAgentsWaitTool } from "./agents-wait-tool.js";
 import { withGatewayToolCallerIdentity } from "./gateway-caller-context.js";
-import { registerSessionsSpawnCompletionTests } from "./sessions-spawn-tool.completion.test-support.js";
+import { registerSessionsSpawnSharedTests } from "./sessions-spawn-visible-thinking.test-support.js";
 
 const { hoisted } = await import("./sessions-spawn-tool.mocks.test-support.js");
 
@@ -134,7 +134,7 @@ describe("sessions_spawn tool", () => {
     return requireRecord(call[argIndex], `${label} call ${callIndex + 1} arg ${argIndex + 1}`);
   }
 
-  registerSessionsSpawnCompletionTests({
+  registerSessionsSpawnSharedTests({
     createTool: (options) => createSessionsSpawnTool(options),
     registerAcpBackendForTest,
     mocks: hoisted,
@@ -509,7 +509,7 @@ describe("sessions_spawn tool", () => {
     };
 
     expect(schema.properties?.visible?.description).toBe(
-      "Persistent sidebar session only when the user requests a separate session or needs to revisit and steer it independently. Internal QA/coding/review/test workers: omit or false. Subagent runtime only; default run mode and empty attachments accepted; no thread/thinking/lightContext or attachment staging.",
+      "Persistent sidebar session only when the user requests a separate session or needs to revisit and steer it independently. Internal QA/coding/review/test workers: omit or false. Subagent runtime only; default run mode and empty attachments accepted; thinking is supported with visible=true; no thread/lightContext or attachment staging.",
     );
     expect(schema.properties?.projectId?.description).toContain("Registered project");
     expect(schema.properties?.projectGitUrl?.description).toContain("managed clone");
@@ -535,6 +535,9 @@ describe("sessions_spawn tool", () => {
     expect(tool.description).toContain("`Owner: <label>` on the second line");
     expect(tool.description).toContain("`tools.sessions.visibility`");
     expect(schema.properties?.runtime?.description).toContain("visible=true");
+    expect(schema.properties?.thinking?.description).toContain(
+      "supported with visible=true for subagents",
+    );
     expect(schema.properties?.mode?.description).toContain('accept omitted/default "run"');
     expect(schema.properties?.lightContext?.description).toContain("unavailable with visible=true");
     expect(schema.properties?.attachments?.description).toContain("accepts only an empty array");
@@ -585,6 +588,7 @@ describe("sessions_spawn tool", () => {
             label: "Issue review",
             group: "P1 issues from beta feedback",
             model: "anthropic/claude-sonnet-4-6",
+            thinking: "HIGH",
             cwd: dir,
             context: "fork",
             visible: true,
@@ -606,6 +610,7 @@ describe("sessions_spawn tool", () => {
         label: "Issue review",
         category: "P1 issues from beta feedback",
         model: "anthropic/claude-sonnet-4-6",
+        thinkingLevel: "high",
         task: expect.stringContaining("[Subagent Task]\n\ninspect issue"),
         timeoutMs: 120000,
         parentSessionKey: "agent:main:main",
@@ -862,33 +867,33 @@ describe("sessions_spawn tool", () => {
       expect(callGateway).not.toHaveBeenCalled();
       expect(hoisted.inProcessCreationMock).not.toHaveBeenCalled();
     });
-  });
 
-  it.each([
-    { group: "Projects" },
-    { projectId: "registered-project" },
-    { projectGitUrl: "https://github.com/openclaw/openclaw.git" },
-    { worktree: true },
-    { worktreeName: "repair" },
-    { worktreeBaseRef: "main" },
-  ])("rejects visible-only options %j with actionable recovery", async (options) => {
-    const callGateway = vi.fn();
-    const tool = createSessionsSpawnTool({ agentSessionKey: "agent:main:main", callGateway });
+    it.each([
+      { group: "Projects" },
+      { projectId: "registered-project" },
+      { projectGitUrl: "https://github.com/openclaw/openclaw.git" },
+      { worktree: true },
+      { worktreeName: "repair" },
+      { worktreeBaseRef: "main" },
+    ])("rejects visible-only options %j with actionable recovery", async (options) => {
+      const callGateway = vi.fn();
+      const tool = createSessionsSpawnTool({ agentSessionKey: "agent:main:main", callGateway });
 
-    await expect(
-      tool.execute("hidden-visible-options", {
-        task: "inspect",
-        runtime: "subagent",
-        mode: "run",
-        ...options,
-      }),
-    ).rejects.toThrow(
-      `Parameters require visible=true: ${Object.keys(options).join(", ")}. ` +
-        'Omit these options for hidden subagent or ACP runs. For a visible session, use visible=true with runtime="subagent"; omit mode, thread, thinking, lightContext, attachments, attachAs, swarm options, and ACP-only streamTo/resumeSessionId. Worktree names/base refs also require worktree=true.',
-    );
-    expect(hoisted.spawnSubagentDirectMock).not.toHaveBeenCalled();
-    expect(hoisted.spawnAcpDirectMock).not.toHaveBeenCalled();
-    expect(callGateway).not.toHaveBeenCalled();
+      await expect(
+        tool.execute("hidden-visible-options", {
+          task: "inspect",
+          runtime,
+          mode: "run",
+          ...options,
+        }),
+      ).rejects.toThrow(
+        `Parameters require visible=true: ${Object.keys(options).join(", ")}. ` +
+          'Omit these options for hidden subagent or ACP runs. For a visible session, use visible=true with runtime="subagent"; omit mode, thread, lightContext, attachments, attachAs, swarm options, and ACP-only streamTo/resumeSessionId. Worktree names/base refs also require worktree=true.',
+      );
+      expect(spawn).not.toHaveBeenCalled();
+      expect(other).not.toHaveBeenCalled();
+      expect(callGateway).not.toHaveBeenCalled();
+    });
   });
 
   it.each([
@@ -1148,11 +1153,6 @@ describe("sessions_spawn tool", () => {
   });
 
   it.each([
-    [
-      "thinking",
-      { thinking: "high" },
-      "Parameters unavailable with visible=true: thinking: thinking overrides are not wired to the sessions.create path",
-    ],
     [
       "thread",
       { thread: true },
