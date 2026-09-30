@@ -3,6 +3,7 @@ import type {
   WorkboardCard,
   WorkboardDiagnostic,
   WorkboardEvent,
+  WorkboardStatus,
   WorkboardWorkspace,
   WorkboardWorkspaceAccess,
 } from "@openclaw/workboard-contract";
@@ -145,6 +146,10 @@ export type WorkboardDispatchOptions = WorkboardListOptions & {
   assertOwnerCurrent?: () => void;
 };
 export type WorkboardStatsResult = WorkboardBoardSummary & {
+  /** Non-archived cards per status; `byStatus` counts archived cards too. */
+  activeByStatus: Partial<Record<WorkboardStatus, number>>;
+  /** Archived cards per status. */
+  archivedByStatus: Partial<Record<WorkboardStatus, number>>;
   byAgent: Record<string, number>;
   oldestReadyAgeMs?: number;
 };
