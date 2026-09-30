@@ -38,7 +38,7 @@ function recoveryRuntime(
 function dispatchRecovery(
   params: Pick<
     Parameters<typeof dispatchRestartRecoveryWithinCapacity>[0],
-    "capacity" | "gatewayRuntime" | "onSettled"
+    "capacity" | "gatewayRuntime" | "onSettled" | "holdTimeoutMs"
   >,
 ) {
   return dispatchRestartRecoveryWithinCapacity({
@@ -123,3 +123,54 @@ it.each([
     release?.();
   },
 );
+
+it("returns undefined when the bounded wait budget is exhausted", async () => {
+  const capacity = createMainSessionRecoveryCapacity({
+    limit: 1,
+    acquireTimeoutMs: 100,
+  });
+  const release = await capacity.acquire(() => true);
+  expect(release).toBeTypeOf("function");
+  const result = await capacity.acquire(() => true);
+  expect(result).toBeUndefined();
+  release?.();
+});
+
+it("forces capacity release after the hold budget is exhausted when the run is no longer live", async () => {
+  vi.spyOn(agentRuns, "hasLiveAgentRunContext").mockReturnValue(false);
+  const runtime = recoveryRuntime(async <T>() => ({ status: "timeout" }) as T);
+  const capacity = createMainSessionRecoveryCapacity({ limit: 1 });
+  const onSettled = vi.fn();
+
+  await dispatchRecovery({
+    capacity,
+    gatewayRuntime: runtime,
+    onSettled,
+    holdTimeoutMs: 100,
+  });
+  await vi.waitFor(() => expect(onSettled).toHaveBeenCalledOnce());
+  const release = await capacity.acquire(() => true);
+  expect(release).toBeTypeOf("function");
+  release?.();
+});
+
+it("releases capacity slot after the hold budget is exhausted even when the run is still live", async () => {
+  vi.spyOn(agentRuns, "hasLiveAgentRunContext").mockReturnValue(true);
+  const runtime = recoveryRuntime(async <T>() => ({ status: "timeout" }) as T);
+  const capacity = createMainSessionRecoveryCapacity({
+    limit: 1,
+    acquireTimeoutMs: 100,
+  });
+  const onSettled = vi.fn();
+
+  await dispatchRecovery({
+    capacity,
+    gatewayRuntime: runtime,
+    onSettled,
+    holdTimeoutMs: 100,
+  });
+  await vi.waitFor(() => expect(onSettled).toHaveBeenCalledOnce());
+  const release = await capacity.acquire(() => true);
+  expect(release).toBeTypeOf("function");
+  release?.();
+});
