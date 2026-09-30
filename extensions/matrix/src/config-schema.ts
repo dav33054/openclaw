@@ -127,6 +127,22 @@ function hasCanonicalMatrixAccountStreaming(account: unknown): boolean {
   return typeof streaming === "object" && streaming !== null && !Array.isArray(streaming);
 }
 
+// Auto-join matches the invited room, so only a room ID, an alias, or "*" can
+// ever succeed. Schema-level validation is otherwise an open string list, so a
+// user ID (or plain name) validates but never fires and the misconfiguration is
+// invisible; reject it here and point at the field that owns sender matching.
+const matrixAutoJoinAllowlistSchema = AllowFromListSchema.refine(
+  (entries) =>
+    (entries ?? []).every((entry) => {
+      const value = String(entry).trim();
+      return value === "*" || value.startsWith("!") || value.startsWith("#");
+    }),
+  {
+    message:
+      'autoJoinAllowlist accepts only a room ID ("!room:server"), an alias ("#alias:server"), or "*"; use dm.allowFrom for user IDs',
+  },
+);
+
 export const MatrixConfigSchema = z.object({
   name: z.string().optional(),
   enabled: z.boolean().optional(),
@@ -186,7 +202,7 @@ export const MatrixConfigSchema = z.object({
   mediaMaxMb: z.number().optional(),
   historyLimit: z.number().int().min(0).optional(),
   autoJoin: z.enum(["always", "allowlist", "off"]).optional(),
-  autoJoinAllowlist: AllowFromListSchema,
+  autoJoinAllowlist: matrixAutoJoinAllowlistSchema,
   groupAllowFrom: AllowFromListSchema,
   dm: buildNestedDmConfigSchema({
     sessionScope: z.enum(["per-user", "per-room"]).optional(),

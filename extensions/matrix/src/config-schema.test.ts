@@ -315,3 +315,45 @@ describe("MatrixConfigSchema exec approvals", () => {
     expect(result.success).toBe(false);
   });
 });
+
+describe("MatrixConfigSchema autoJoinAllowlist", () => {
+  it("rejects a Matrix user ID and points at dm.allowFrom", () => {
+    const result = MatrixConfigSchema.safeParse({
+      homeserver: "https://matrix.example.org",
+      accessToken: "token",
+      autoJoin: "allowlist",
+      autoJoinAllowlist: ["@ryan:example.org"],
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      // The channel-config wrapper reshapes failures into { issues }.
+      expect(JSON.stringify(result.issues)).toContain("dm.allowFrom");
+    }
+  });
+
+  it.each([
+    ["plain room name", "ops"],
+    ["number", 42],
+    ["user ID", "@ryan:example.org"],
+  ])("rejects the unmatchable %s entry", (_name, entry) => {
+    const result = MatrixConfigSchema.safeParse({
+      homeserver: "https://matrix.example.org",
+      accessToken: "token",
+      autoJoinAllowlist: [entry],
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts room IDs, aliases, and the wildcard", () => {
+    const result = MatrixConfigSchema.safeParse({
+      homeserver: "https://matrix.example.org",
+      accessToken: "token",
+      autoJoin: "allowlist",
+      autoJoinAllowlist: ["!ops:example.org", " #support:example.org ", "*"],
+    });
+
+    expect(result.success).toBe(true);
+  });
+});
