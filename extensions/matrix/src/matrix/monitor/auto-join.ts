@@ -33,6 +33,21 @@ export function registerMatrixAutoJoin(params: {
     logVerbose("matrix: auto-join enabled for all invites");
   } else {
     logVerbose("matrix: auto-join enabled for allowlist invites");
+    // Room-scoped matching only understands a room ID, an alias, or "*". Surface
+    // entries that can never match (for example a Matrix user ID) at the default
+    // log level, otherwise an inert allowlist silently ignores every invite. The
+    // config schema rejects these for the root config; account-scoped config is
+    // schema-open, so report them here as well.
+    const unmatchableEntries = rawAllowlist.filter(
+      (entry) => entry !== "*" && !entry.startsWith("!") && !entry.startsWith("#"),
+    );
+    if (unmatchableEntries.length > 0) {
+      core.logging
+        .getChildLogger({ module: "matrix-auto-join" })
+        .warn(
+          `matrix: autoJoinAllowlist entries cannot match an invited room and are ignored: ${unmatchableEntries.join(", ")}`,
+        );
+    }
   }
 
   const resolveAllowedAliasRoomId = async (alias: string): Promise<string | null> => {
