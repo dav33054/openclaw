@@ -118,9 +118,15 @@ export async function clearRemovedSessionAuthProfiles(params: {
                     target: { canonicalKey: sessionKey, storeKeys: [sessionKey] },
                   },
                   (current) => {
-                    const clearCurrent = current.authProfileOverride === profileId;
+                    // Required inherited bindings are fail-closed deny markers after removal.
+                    // Clearing them would let a delegated run silently claim another credential.
+                    const clearCurrent =
+                      current.authProfileOverride === profileId &&
+                      !current.authProfileOverrideRequired;
                     const fallback = current.modelFallback;
-                    const clearPrevious = fallback?.prevAuthProfileOverride === profileId;
+                    const clearPrevious =
+                      fallback?.prevAuthProfileOverride === profileId &&
+                      !fallback.prevAuthProfileOverrideRequired;
                     if (!clearCurrent && !clearPrevious) {
                       return null;
                     }
