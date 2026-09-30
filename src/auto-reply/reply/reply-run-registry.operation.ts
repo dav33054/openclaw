@@ -36,6 +36,7 @@ import {
   isReplyOperationAbortable,
   isReplyOperationPreBackendPhase,
   notifyReplyRunEnded,
+  notifyReplyOperationBackendReadiness,
   operationsByUpstreamAbortSignal,
   producerCompletionByOperation,
   prepareReplyRunKeyUpdate,
@@ -135,6 +136,7 @@ export function createReplyOperation(params: {
   };
   const setResult = (next: ReplyOperationResult) => {
     result = next;
+    notifyReplyOperationBackendReadiness(operation);
     toolAuthority.close();
     recordActivity();
   };
@@ -179,6 +181,7 @@ export function createReplyOperation(params: {
       sessionId: currentSessionId,
       operation,
     });
+    notifyReplyOperationBackendReadiness(operation);
     if (!registeredBarrier) {
       flushReplyOperationAfterClear(operation, currentSessionId);
       return;
@@ -294,6 +297,7 @@ export function createReplyOperation(params: {
       }
       recordActivity();
       phase = next;
+      notifyReplyOperationBackendReadiness(operation);
     },
     markWaitingForDeferredMaintenance() {
       if (result || phase !== "queued") {
@@ -326,6 +330,7 @@ export function createReplyOperation(params: {
       phase = phaseBeforeGlobalLaneWait ?? "queued";
       phaseBeforeGlobalLaneWait = undefined;
       markProgress("global_lane:wait_ended");
+      notifyReplyOperationBackendReadiness(operation);
     },
     markTerminalRecovery() {
       terminalRecovery = true;
@@ -391,6 +396,7 @@ export function createReplyOperation(params: {
       // The previous key's slot is idle now; wake turns waiting on it.
       notifyReplyRunEnded(previousKey);
       markProgress("reply_operation:session_key_adopted");
+      notifyReplyOperationBackendReadiness(operation);
     },
     attachBackend(handle) {
       if (result) {
@@ -411,6 +417,7 @@ export function createReplyOperation(params: {
       if (controller.signal.aborted) {
         handle.cancel("superseded");
       }
+      notifyReplyOperationBackendReadiness(operation);
     },
     detachBackend(handle) {
       if (getAttachedBackend(operation) === handle) {
