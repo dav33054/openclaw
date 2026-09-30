@@ -23,7 +23,7 @@ import {
   normalizeStringEntries,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { convertMarkdownTables } from "openclaw/plugin-sdk/text-chunking";
-import type { ChannelOutboundAdapter } from "../runtime-api.js";
+import type { ChannelOutboundAdapter, ClawdbotConfig } from "../runtime-api.js";
 import { resolveFeishuAccount } from "./accounts.js";
 import { sendCommentThreadReply } from "./comment-send.js";
 import { parseFeishuCommentTarget } from "./comment-target.js";
@@ -62,6 +62,7 @@ import {
 import { withFeishuSendContext } from "./send-context.js";
 import {
   chunkFeishuCardMarkdown,
+  resolveFeishuReplyAnchorMessageId,
   sendCardFeishu,
   sendMessageFeishu,
   sendStructuredCardFeishu,
@@ -411,15 +412,51 @@ function withFeishuOutboundSendContext(adapter: ChannelOutboundAdapter): Channel
   return {
     ...adapter,
     ...(sendText
-      ? { sendText: async (ctx) => withFeishuSendContext(ctx, () => sendText(ctx)) }
+      ? {
+          sendText: async (ctx) => {
+            const threadId = await resolveReplyAnchorThreadId(ctx);
+            const anchored = threadId === ctx.threadId ? ctx : { ...ctx, threadId };
+            return await withFeishuSendContext(anchored, () => sendText(anchored));
+          },
+        }
       : {}),
     ...(sendMedia
-      ? { sendMedia: async (ctx) => withFeishuSendContext(ctx, () => sendMedia(ctx)) }
+      ? {
+          sendMedia: async (ctx) => {
+            const threadId = await resolveReplyAnchorThreadId(ctx);
+            const anchored = threadId === ctx.threadId ? ctx : { ...ctx, threadId };
+            return await withFeishuSendContext(anchored, () => sendMedia(anchored));
+          },
+        }
       : {}),
     ...(sendPayload
-      ? { sendPayload: async (ctx) => withFeishuSendContext(ctx, () => sendPayload(ctx)) }
+      ? {
+          sendPayload: async (ctx) => {
+            const threadId = await resolveReplyAnchorThreadId(ctx);
+            const anchored = threadId === ctx.threadId ? ctx : { ...ctx, threadId };
+            return await withFeishuSendContext(anchored, () => sendPayload(anchored));
+          },
+        }
       : {}),
   };
+}
+
+/**
+ * A channel target identifies a conversation by its topic (`omt_…`), but a Feishu reply addresses
+ * a message. Sends resolve that topic once per target so every part — text, media, payload and
+ * fanout — replies inside the topic instead of starting a new top-level topic. Targets that
+ * already name a message pass through without a lookup.
+ */
+async function resolveReplyAnchorThreadId(ctx: {
+  cfg: ClawdbotConfig;
+  threadId?: string | number | null;
+  accountId?: string | null;
+}): Promise<string | null | undefined> {
+  return await resolveFeishuReplyAnchorMessageId({
+    cfg: ctx.cfg,
+    threadId: typeof ctx.threadId === "number" ? String(ctx.threadId) : ctx.threadId,
+    accountId: ctx.accountId ?? undefined,
+  });
 }
 
 export const feishuOutbound: ChannelOutboundAdapter = withFeishuOutboundSendContext({

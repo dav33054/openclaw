@@ -504,13 +504,13 @@ type FeishuActionReplyAnchor = {
 
 type FeishuSendActionContext = Pick<
   ChannelMessageActionContext,
-  "action" | "params" | "sessionKey" | "toolContext" | "requesterAccountId" | "reply"
+  "action" | "cfg" | "params" | "sessionKey" | "toolContext" | "requesterAccountId" | "reply"
 >;
 
-function resolveFeishuTopicAutoThreadAnchor(
+async function resolveFeishuTopicAutoThreadAnchor(
   ctx: FeishuSendActionContext,
   accountId: string,
-): string | undefined {
+): Promise<string | undefined> {
   const currentTarget =
     ctx.toolContext?.currentMessagingTarget ?? ctx.toolContext?.currentChannelId;
   const target = resolveFeishuActionTarget(ctx);
@@ -530,13 +530,30 @@ function resolveFeishuTopicAutoThreadAnchor(
     return undefined;
   }
   const inbound = ctx.toolContext?.currentMessageId;
-  return typeof inbound === "string" && inbound.length > 0 ? inbound : undefined;
+  if (typeof inbound === "string" && inbound.length > 0) {
+    return inbound;
+  }
+  // Turns the agent starts on its own (heartbeat, scheduled work, tool sends) have no inbound
+  // message, but the topic session still names the topic. Resolve that topic's root message so
+  // the reply lands inside the topic instead of starting a new top-level topic.
+  const sessionTopicId = parseFeishuConversationId({
+    conversationId: ctx.sessionKey ?? "",
+  })?.topicId?.trim();
+  if (!sessionTopicId) {
+    return undefined;
+  }
+  const runtime = await loadFeishuChannelRuntime();
+  return await runtime.resolveFeishuReplyAnchorMessageId({
+    cfg: ctx.cfg,
+    threadId: sessionTopicId,
+    accountId,
+  });
 }
 
-function buildFeishuSendReplyAnchor(
+async function buildFeishuSendReplyAnchor(
   ctx: FeishuSendActionContext,
   accountId: string,
-): FeishuActionReplyAnchor {
+): Promise<FeishuActionReplyAnchor> {
   if (ctx.action === "thread-reply") {
     return {
       replyToMessageId: resolveFeishuMessageId(ctx.params),
@@ -544,7 +561,8 @@ function buildFeishuSendReplyAnchor(
     };
   }
   const threadId =
-    readFirstString(ctx.params, ["threadId"]) ?? resolveFeishuTopicAutoThreadAnchor(ctx, accountId);
+    readFirstString(ctx.params, ["threadId"]) ??
+    (await resolveFeishuTopicAutoThreadAnchor(ctx, accountId));
   // Core also writes implicit reply IDs into params; they must not override
   // native topic delivery. Only an explicit reply can choose normal reply mode.
   const replyToId = ctx.reply
@@ -1189,7 +1207,7 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
                 "Feishu sticker requires fileId (or first stickerId): use the file_key of a sticker this bot previously received.",
               );
             }
-            const anchor = buildFeishuSendReplyAnchor(ctx, account.accountId);
+            const anchor = await buildFeishuSendReplyAnchor(ctx, account.accountId);
             const runtime = await loadFeishuChannelRuntime();
             const result = await runtime.sendStickerFeishu({
               cfg: ctx.cfg,
@@ -1210,7 +1228,7 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
             if (!to) {
               throw new Error(`Feishu ${ctx.action} requires a target (to).`);
             }
-            const { replyToMessageId, replyInThread } = buildFeishuSendReplyAnchor(
+            const { replyToMessageId, replyInThread } = await buildFeishuSendReplyAnchor(
               ctx,
               account.accountId,
             );
@@ -1738,6 +1756,9 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
         normalizeTarget: (raw) => normalizeFeishuTarget(raw) ?? undefined,
         inferTargetChatType: ({ to }) =>
           resolveReceiveIdType(to) === "chat_id" ? "group" : "direct",
+        // A heartbeat for a group session must reply into the session's topic instead of
+        // starting a new top-level topic, so core may reuse the recorded route thread id.
+        preserveHeartbeatThreadIdForGroupRoute: true,
         resolveDeliveryTarget: ({ conversationId, parentConversationId }) => {
           const directId = parseFeishuDirectConversationId(conversationId);
           if (directId) {

@@ -299,3 +299,97 @@ describe("Feishu bot-owned thread mentions", () => {
     },
   );
 });
+
+describe("Feishu topic session keys", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetMessageFeishu.mockReset().mockResolvedValue(null);
+    setFeishuRuntime(
+      createPluginRuntimeMock({
+        config: { current: () => currentRuntimeConfig },
+        channel: {
+          inbound: { buildContext: buildChannelInboundEventContext },
+          reply: { dispatchReplyWithBufferedBlockDispatcher: mockDispatchReply },
+          routing: { resolveAgentRoute: mockResolveAgentRoute },
+        },
+      }),
+    );
+  });
+
+  const topicCfg = () =>
+    createFeishuTestConfig({
+      appId: "cli_test",
+      appSecret: "test-secret",
+      groupPolicy: "open",
+      requireMention: false,
+      groups: {
+        "oc-group": { groupSessionScope: "group_topic", replyInThread: "enabled" },
+      },
+    });
+
+  const routedPeerIds = () =>
+    mockResolveAgentRoute.mock.calls.map(([params]) => {
+      const peer = (params as unknown as { peer?: { id?: string } } | undefined)?.peer;
+      return peer?.id;
+    });
+
+  it("keys every message of a topic to the topic id, including quote replies", async () => {
+    // Feishu reports thread_id on every message of a topic, while a quote reply's root_id points
+    // at the quoted message. Keying on root_id first split one topic into two sessions.
+    const cfg = topicCfg();
+    // The quoted-message lookup must not be able to move the session.
+    mockGetMessageFeishu.mockResolvedValue({
+      messageId: "om_mid_topic_message",
+      chatId: "oc-group",
+      chatType: "topic_group",
+      content: "quoted",
+      contentType: "text",
+      threadId: "omt_some_other_topic",
+    });
+
+    await dispatchMessage({
+      cfg,
+      event: createFeishuTestEvent({
+        messageId: "om_topic_starter_message",
+        senderOpenId: "ou-topic-user",
+        chatId: "oc-group",
+        chatType: "group",
+        text: "topic starter",
+        message: { thread_id: "omt_topic_quote" },
+      }),
+    });
+    await dispatchMessage({
+      cfg,
+      event: createFeishuTestEvent({
+        messageId: "om_topic_quoted_reply",
+        senderOpenId: "ou-topic-user",
+        chatId: "oc-group",
+        chatType: "group",
+        text: "quote reply inside the same topic",
+        message: { root_id: "om_mid_topic_message", thread_id: "omt_topic_quote" },
+      }),
+    });
+
+    expect(routedPeerIds()).toEqual([
+      "oc-group:topic:omt_topic_quote",
+      "oc-group:topic:omt_topic_quote",
+    ]);
+  });
+
+  it("keeps the topic id as the session key for a topic starter", async () => {
+    // Existing topic sessions are stored under this key, so it must stay the topic id.
+    await dispatchMessage({
+      cfg: topicCfg(),
+      event: createFeishuTestEvent({
+        messageId: "om_fallback_topic_starter",
+        senderOpenId: "ou-topic-user",
+        chatId: "oc-group",
+        chatType: "group",
+        text: "topic starter",
+        message: { thread_id: "omt_topic_fallback" },
+      }),
+    });
+
+    expect(routedPeerIds()).toEqual(["oc-group:topic:omt_topic_fallback"]);
+  });
+});
