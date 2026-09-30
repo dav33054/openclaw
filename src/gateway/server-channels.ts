@@ -27,7 +27,6 @@ import {
   resolveUnavailableChannelAccountSnapshot,
 } from "../channels/status/account-state.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { withGatewayNativeApprovalRuntime } from "../infra/approval-gateway-runtime-context.js";
 import type { GatewayNativeApprovalMethod } from "../infra/approval-gateway-runtime-methods.js";
 import type { GatewayNativeApprovalRuntime } from "../infra/approval-gateway-runtime.types.js";
 import { startChannelApprovalHandlerBootstrap } from "../infra/approval-handler-bootstrap.js";
@@ -85,6 +84,7 @@ import { pauseChannelStarts, type ChannelStartFence } from "./server-channel-sta
 import {
   runChannelAccountMonitor,
   waitForChannelStartupHandoff,
+  withChannelAccountStartContext,
 } from "./server-channel-startup.js";
 
 const RESTART_POLICY: BackoffPolicy = {
@@ -935,7 +935,7 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
                   channelRunDurationMs = Date.now() - startedAt;
                 };
                 try {
-                  return withGatewayNativeApprovalRuntime(opts.getNativeApprovalRuntime?.(), () =>
+                  return withChannelAccountStartContext(opts.getNativeApprovalRuntime?.(), () =>
                     startAccount({
                       ...accountContext,
                       setStatus: (next) =>
