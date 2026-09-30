@@ -8,7 +8,6 @@ import type {
   DiscordActionConfig,
   OpenClawConfig,
 } from "openclaw/plugin-sdk/config-contracts";
-// Discord plugin module implements runtime.messaging.shared behavior.
 import { resolveOpenProviderRuntimeGroupPolicy } from "openclaw/plugin-sdk/runtime-group-policy";
 import { mergeDiscordAccountConfig, resolveDefaultDiscordAccountId } from "../accounts.js";
 import { isDiscordThreadChannelType } from "../channel-type.js";
