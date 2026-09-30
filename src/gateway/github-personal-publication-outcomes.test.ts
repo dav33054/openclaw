@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { patchSessionEntryCore } from "../config/sessions/session-accessor.js";
+import { ensurePersonalGitHubPublicationSchema } from "../state/openclaw-state-db-schema-additive.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { readPersonalGitHubPublication } from "./github-personal-publication-store.js";
 import {
@@ -14,13 +16,17 @@ import {
   SESSION_ID,
   SESSION_KEY,
   commandResult,
+  commands,
   createRealPublicationWorkspace,
   githubPublicationTestMocks,
   installGitHubPublicationTestHarness,
+  persistPublicationTestSession,
 } from "./github-publication.test-support.js";
 import { resolveGatewayOperatorAccessAuthority } from "./operator-access-policy.js";
+import { preparePersonalGitHubSessionAction } from "./server-methods/github-personal-authorization.js";
 
 const mocks = githubPublicationTestMocks();
+const table = "github_personal_publication_requests";
 vi.mock("../agents/worktrees/git-lock.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../agents/worktrees/git-lock.js")>()),
   lockWorktreeForProcess: vi.fn(async () => undefined),
@@ -41,8 +47,11 @@ describe("personal publication definitive outcomes", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
-  const rpc = (method: string, params?: Record<string, unknown>) =>
-    callPersonalPublicationRpc(fixture, method, params);
+  const rpc = (
+    method: string,
+    params?: Record<string, unknown>,
+    hooks?: Parameters<typeof callPersonalPublicationRpc>[3],
+  ) => callPersonalPublicationRpc(fixture, method, params, hooks);
   const request = () => ({
     sessionKey: SESSION_KEY,
     idempotencyKey: "personal-publish",
@@ -315,4 +324,130 @@ describe("personal publication definitive outcomes", () => {
       expect(fresh[1].requestId).not.toBe(initial.requestId);
     },
   );
+
+  // Leaves a personal publication row in "requested" (needs_confirmation) by aborting
+  // admission through a temp trigger, so tests can drive status/options readbacks.
+  const createStoppedPersonalRequest = async () => {
+    const { client, context, coordinator } = fixture;
+    await persistPublicationTestSession();
+    const controller = new AbortController();
+    const db = openOpenClawStateDatabase().db;
+    ensurePersonalGitHubPublicationSchema(db);
+    db.function("stop_personal_admission", () => {
+      controller.abort();
+      return 1;
+    });
+    db.exec(`CREATE TEMP TRIGGER stop_personal_admission AFTER INSERT ON ${table}
+      BEGIN SELECT stop_personal_admission(); END`);
+    const stopped = preparePersonalGitHubSessionAction(
+      { client, context, signal: controller.signal },
+      { sessionKey: SESSION_KEY },
+    );
+    await expect(coordinator.requestPersonalForSession(request(), stopped)).rejects.toThrow(
+      "current",
+    );
+    db.exec("DROP TRIGGER stop_personal_admission");
+    const row = openOpenClawStateDatabase()
+      .db.prepare(`SELECT request_id, status, execution_id FROM ${table}`)
+      .get() as { request_id: string; status: string; execution_id: null };
+    expect(row).toMatchObject({ status: "requested", execution_id: null });
+    return row.request_id;
+  };
+  // The scope omits storePath: the fixture persists through the resolved agent store, and
+  // a custom locator would resolve a different SQLite file and silently no-op the patch.
+  const archiveSession = () =>
+    patchSessionEntryCore({ agentId: "main", sessionKey: SESSION_KEY }, () => ({
+      archivedAt: Date.now(),
+    }));
+  const restoreSession = () =>
+    patchSessionEntryCore({ agentId: "main", sessionKey: SESSION_KEY }, () => ({
+      archivedAt: undefined,
+    }));
+
+  it("stops offering a pending confirmation once the session is archived", async () => {
+    const { generation } = fixture;
+    const requestId = await createStoppedPersonalRequest();
+    const pending = await rpc("sessions.github.status", {
+      sessionKey: SESSION_KEY,
+      requestId,
+    });
+    expect(pending[1]).toMatchObject({
+      result: { status: "needs_confirmation" },
+      confirmation: { generation, account },
+    });
+    // Archiving preserves sessionId/lifecycleRevision, so only an explicit archivedAt
+    // check can retire the pending confirmation the archived confirm action would reject.
+    await archiveSession();
+    const discovered = await rpc("sessions.github.status", {
+      sessionKey: SESSION_KEY,
+      requestId,
+    });
+    expect(discovered[1]).toMatchObject({
+      result: { status: "failed", code: "session_changed" },
+      confirmation: null,
+    });
+    expect((await rpc("sessions.github.options"))[1].pendingPersonal).toMatchObject({
+      result: { status: "failed", code: "session_changed" },
+      confirmation: null,
+    });
+    expect(commands.some((argv) => argv.includes("push"))).toBe(false);
+  });
+
+  it("projects an archive that lands while publication options are awaited", async () => {
+    await createStoppedPersonalRequest();
+    const before = await rpc("sessions.github.options");
+    expect(before[1].pendingPersonal).toMatchObject({
+      result: { status: "needs_confirmation" },
+      confirmation: { generation: fixture.generation, account },
+    });
+    // The archive lands inside the awaited personal-status work, after the options
+    // request captured its request-start session snapshot; the projection must re-read
+    // archivedAt instead of offering the confirmation the archived session would reject.
+    const discovered = await rpc(
+      "sessions.github.options",
+      { sessionKey: SESSION_KEY },
+      { duringPersonalStatus: archiveSession },
+    );
+    expect(discovered[1].pendingPersonal).toMatchObject({
+      result: { status: "failed", code: "session_changed" },
+      confirmation: null,
+    });
+    expect(commands.some((argv) => argv.includes("push"))).toBe(false);
+  });
+
+  it("revives the pending confirmation when a restore lands while options are awaited", async () => {
+    await createStoppedPersonalRequest();
+    await archiveSession();
+    // The restore lands inside the awaited personal-status work; the projection must use
+    // the refreshed archivedAt instead of reporting session_changed for an active session.
+    const revived = await rpc(
+      "sessions.github.options",
+      { sessionKey: SESSION_KEY },
+      { duringPersonalStatus: restoreSession },
+    );
+    expect(revived[0], JSON.stringify(revived[2])).toBe(true);
+    expect(revived[1].pendingPersonal).toMatchObject({
+      result: { status: "needs_confirmation" },
+      confirmation: { generation: fixture.generation, account },
+    });
+  });
+
+  it("rejects publication options when an archive lands after the pending projection", async () => {
+    await createStoppedPersonalRequest();
+    const coordinator: typeof fixture.coordinator = {
+      ...fixture.coordinator,
+      personalPending: async (...args: Parameters<typeof fixture.coordinator.personalPending>) => {
+        // The archive lands after the projection consumed the refreshed session snapshot
+        // but before the response; the read must fail rather than answer from stale state.
+        await archiveSession();
+        return await fixture.coordinator.personalPending(...args);
+      },
+    };
+    const response = await callPersonalPublicationRpc(
+      { ...fixture, coordinator },
+      "sessions.github.options",
+    );
+    expect(response[0]).toBe(false);
+    expect(JSON.stringify(response[2])).toContain("session access changed");
+  });
 });
