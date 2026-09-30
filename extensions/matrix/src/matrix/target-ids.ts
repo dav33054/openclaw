@@ -59,6 +59,19 @@ export function isMatrixRoomId(raw: string): boolean {
   return trimmed.startsWith("!") && trimmed.length > 1;
 }
 
+/**
+ * Whether `raw` is an invite auto-join target the room matcher can ever accept:
+ * the wildcard, a literal room ID, or a full `#alias:server`. This is the shared
+ * contract for `channels.matrix.autoJoinAllowlist`; the setup wizard rejects
+ * other values and the invite handler reports them as inert.
+ */
+export function isMatrixInviteAutoJoinTarget(raw: string): boolean {
+  const trimmed = raw.trim();
+  return (
+    trimmed === "*" || isMatrixRoomId(trimmed) || (trimmed.startsWith("#") && trimmed.includes(":"))
+  );
+}
+
 export function normalizeMatrixResolvableTarget(raw: string): string {
   return stripKnownPrefixes(raw, [MATRIX_PREFIX, ROOM_PREFIX, CHANNEL_PREFIX]);
 }
