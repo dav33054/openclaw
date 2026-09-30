@@ -1070,7 +1070,7 @@ export async function getReplyFromConfig(
     const { stageSandboxMedia } = await stageSandboxMediaRuntimeLoader.load();
     const stagingWorkspaceDir =
       resolveIngressWorkspaceOverrideForSessionRun({
-        spawnedBy: sessionEntry.spawnedBy,
+        ...sessionEntry,
         workspaceDir: sessionEntry.spawnedWorkspaceDir,
         cwd: sessionEntry.spawnedCwd,
       }) ?? workspaceDir;
