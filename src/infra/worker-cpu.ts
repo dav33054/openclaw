@@ -67,8 +67,71 @@ const trackedWorkers = resolveGlobalSingleton(Symbol.for("openclaw.workerCpuSour
   };
 });
 
+export function getParentConfiguredHeapLimitMb(): number | undefined {
+  for (let i = 0; i < process.execArgv.length; i++) {
+    const arg = process.execArgv[i];
+    const match = arg.match(/^--(?:max-old-space-size|max_old_space_size)=(\d+)$/);
+    if (match) {
+      return Number.parseInt(match[1], 10);
+    }
+    if (arg === "--max-old-space-size" || arg === "--max_old_space_size") {
+      const next = process.execArgv[i + 1];
+      if (next && /^\d+$/.test(next)) {
+        return Number.parseInt(next, 10);
+      }
+    }
+  }
+  const nodeOptions = process.env.NODE_OPTIONS;
+  if (nodeOptions) {
+    const match = nodeOptions.match(/--(?:max-old-space-size|max_old_space_size)[=\s](\d+)/);
+    if (match) {
+      return Number.parseInt(match[1], 10);
+    }
+  }
+  return undefined;
+}
+
 export function createCpuTrackedWorker(...args: ConstructorParameters<typeof Worker>): Worker {
-  const worker = new Worker(...args);
+  const options = args[1];
+  const maxOldGenMb = options?.resourceLimits?.maxOldGenerationSizeMb;
+  const parentLimitMb = getParentConfiguredHeapLimitMb();
+  const needsReset =
+    maxOldGenMb !== undefined &&
+    parentLimitMb !== undefined &&
+    typeof v8?.setFlagsFromString === "function";
+
+  if (needsReset) {
+    try {
+      v8.setFlagsFromString("--max-old-space-size=0");
+    } catch {
+      // Non-fatal on alternate runtimes or when flag manipulation is restricted.
+    }
+  }
+
+  let isolateStarted = false;
+  const restoreParentLimit = () => {
+    if (needsReset) {
+      try {
+        v8.setFlagsFromString(`--max-old-space-size=${parentLimitMb}`);
+      } catch {
+        // Non-fatal.
+      }
+    }
+  };
+
+  let worker: Worker;
+  try {
+    worker = new Worker(...args);
+    worker.once("online", restoreParentLimit);
+    worker.once("error", restoreParentLimit);
+    worker.once("exit", restoreParentLimit);
+    isolateStarted = true;
+  } finally {
+    if (!isolateStarted) {
+      restoreParentLimit();
+    }
+  }
+
   trackWorker(worker); // Bun need not emit Node's process-level Worker event.
   // Node's process event can register the Worker before its constructor returns.
   trackedWorkers.workers.get(worker)!.script = workerScriptName(args[0], args[1]?.eval);

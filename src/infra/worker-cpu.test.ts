@@ -3,6 +3,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { MessageChannel, MessagePort, Worker } from "node:worker_threads";
+import v8 from "node:v8";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { createDeferredCore } from "../shared/deferred.js";
@@ -293,5 +294,42 @@ describe("worker CPU lifecycle", () => {
     await expect(source.cpuUsage()).resolves.toBeUndefined();
     await expect(source.cpuUsage()).resolves.toEqual({ user: 100, system: 10 });
     expect(cpuUsage).toHaveBeenCalledTimes(3);
+  });
+
+  it("enforces worker resourceLimits heap ceiling even when parent has a process-wide heap flag", async () => {
+    const priorNodeOptions = process.env.NODE_OPTIONS;
+    process.env.NODE_OPTIONS = `${priorNodeOptions ?? ""} --max-old-space-size=4096`.trim();
+    v8.setFlagsFromString?.("--max-old-space-size=4096");
+    try {
+      const probeSource = `
+        const v8 = require("node:v8");
+        const { parentPort } = require("node:worker_threads");
+        parentPort.postMessage({ heapSizeLimit: v8.getHeapStatistics().heap_size_limit });
+      `;
+      const worker = createCpuTrackedWorker(probeSource, {
+        eval: true,
+        resourceLimits: { maxOldGenerationSizeMb: 512 },
+      });
+      workers.push(worker);
+      const [message] = (await once(worker, "message")) as [{ heapSizeLimit: number }];
+      const heapLimitMb = Math.round(message.heapSizeLimit / (1024 * 1024));
+      expect(heapLimitMb).toBeLessThan(1024);
+      expect(heapLimitMb).toBeGreaterThanOrEqual(512);
+
+      const unconstrainedWorker = createCpuTrackedWorker(probeSource, { eval: true });
+      workers.push(unconstrainedWorker);
+      const [unconstrainedMessage] = (await once(unconstrainedWorker, "message")) as [
+        { heapSizeLimit: number },
+      ];
+      const unconstrainedMb = Math.round(unconstrainedMessage.heapSizeLimit / (1024 * 1024));
+      expect(unconstrainedMb).toBeGreaterThanOrEqual(4096);
+    } finally {
+      if (priorNodeOptions === undefined) {
+        delete process.env.NODE_OPTIONS;
+      } else {
+        process.env.NODE_OPTIONS = priorNodeOptions;
+      }
+      v8.setFlagsFromString?.("--max-old-space-size=0");
+    }
   });
 });
