@@ -1,9 +1,6 @@
 import { STREAM_ERROR_FALLBACK_TEXT } from "@openclaw/ai/internal/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  GENERIC_EXTERNAL_RUN_FAILURE_TEXT,
-  HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT,
-} from "../agents/failover/user-copy.js";
+import { GENERIC_EXTERNAL_RUN_FAILURE_TEXT } from "../agents/failover/user-copy.js";
 import { createHeartbeatToolResponsePayload } from "../auto-reply/heartbeat-tool-response.js";
 import { markReplyPayloadForSourceSuppressionDelivery } from "../auto-reply/reply-payload.js";
 import { normalizeReplyPayloadDirectives } from "../auto-reply/reply/reply-delivery.js";
@@ -380,8 +377,8 @@ describe("runHeartbeatOnce heartbeat response tool", () => {
           status: "failed",
           reason: "agent-runner-failure",
         });
-        expectSend(HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT);
-        expect(HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT).not.toContain("/new");
+        expectSend(GENERIC_EXTERNAL_RUN_FAILURE_TEXT);
+        expect(replySpy.mock.calls[0]?.[1]?.useHeartbeatFailureCopy).toBe(false);
         expect(peekSystemEventEntries(sessionKey)).toEqual(inspectedEvents);
         expect(readSessionStoreForTest(storePath)[sessionKey]).toMatchObject(previousHeartbeat);
         replySpy.mockImplementationOnce(async (_ctx, options) => {

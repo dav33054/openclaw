@@ -15,6 +15,8 @@ import { isSilentReplyPayloadText } from "../auto-reply/tokens.js";
 import type { ReplyPayload } from "../auto-reply/types.js";
 import { escapeRegExp } from "../utils.js";
 import { truncateHeartbeatPreview } from "./heartbeat-runner-prompt.js";
+import { isRealHeartbeatWake } from "./heartbeat-wake-policy.js";
+import type { HeartbeatWakeSource } from "./heartbeat-wake.js";
 
 export type NormalizedHeartbeatDelivery = {
   shouldSkip: boolean;
@@ -117,6 +119,7 @@ export function classifyHeartbeatAgentOutcome(params: {
     heartbeatTerminalToolFailure?: HeartbeatTerminalToolFailure;
     replyPayload?: ReplyPayload;
   };
+  wakeSource?: HeartbeatWakeSource;
   hasRelayableExecCompletion: boolean;
   suppressUnmarkedSourceReplies: boolean;
   responsePrefix: string | undefined;
@@ -164,7 +167,7 @@ export function classifyHeartbeatAgentOutcome(params: {
           params.ackMaxChars,
           mode,
         );
-  if (agentRunFailed) {
+  if (agentRunFailed && isRealHeartbeatWake(params.wakeSource)) {
     const replacement = replaceGenericExternalRunFailureText(normalized.text);
     if (replacement.replaced) {
       normalized.text = replacement.text;

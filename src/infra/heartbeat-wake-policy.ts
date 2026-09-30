@@ -93,3 +93,12 @@ export function isConfiguredHeartbeatAgent(cfg: OpenClawConfig, agentId: string)
   const normalized = normalizeAgentId(agentId);
   return listAgentIds(cfg).some((candidate) => normalizeAgentId(candidate) === normalized);
 }
+
+/**
+ * Returns true only for wakes that are genuine periodic heartbeat checks
+ * (scheduled interval, manual trigger, or unknown/ambient). Event-driven
+ * wakes (exec, cron, background-task, hook, etc.) return false.
+ */
+export function isRealHeartbeatWake(source: HeartbeatWakeSource | undefined): boolean {
+  return !source || source === "interval" || source === "manual";
+}

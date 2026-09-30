@@ -659,6 +659,7 @@ export async function runReplyAgent(
     return await handleReplyAgentRunError(error, {
       resolveVisibleReplyDelivery,
       isHeartbeat,
+      useHeartbeatFailureCopy: opts?.useHeartbeatFailureCopy,
       replyExpectation,
       isRestartRecoveryArmed,
       replyOperation,

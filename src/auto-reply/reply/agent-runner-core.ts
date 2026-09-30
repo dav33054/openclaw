@@ -332,6 +332,7 @@ export async function handleReplyAgentRunError(
   context: {
     resolveVisibleReplyDelivery: () => Promise<boolean>;
     isHeartbeat: boolean;
+    useHeartbeatFailureCopy?: boolean;
     replyExpectation: ReplyExpectation;
     isRestartRecoveryArmed: () => Promise<boolean>;
     replyOperation: ReplyOperation;
@@ -343,6 +344,7 @@ export async function handleReplyAgentRunError(
   const {
     resolveVisibleReplyDelivery,
     isHeartbeat,
+    useHeartbeatFailureCopy,
     replyExpectation,
     isRestartRecoveryArmed,
     replyOperation,
@@ -401,7 +403,12 @@ export async function handleReplyAgentRunError(
   if (!isHeartbeat && visibleReplyDelivered && !replyOperation.abortSignal.aborted) {
     replyOperation.fail("run_failed", error);
     return returnWithQueuedFollowupDrain(
-      buildTerminalAgentRunFailureReplyPayload({ replyExpectation, visibleReplyDelivered }),
+      buildTerminalAgentRunFailureReplyPayload({
+        isHeartbeat,
+        useHeartbeatFailureCopy,
+        replyExpectation,
+        visibleReplyDelivered,
+      }),
     );
   }
   replyOperation.fail("run_failed", error);

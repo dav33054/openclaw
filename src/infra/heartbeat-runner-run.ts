@@ -24,6 +24,7 @@ import {
   type HeartbeatRunOptions,
 } from "./heartbeat-runner-execution.js";
 import { createHeartbeatTypingCallbacks } from "./heartbeat-typing.js";
+import { isRealHeartbeatWake } from "./heartbeat-wake-policy.js";
 import { getHeartbeatWakeAbortSignal, type HeartbeatRunResult } from "./heartbeat-wake.js";
 import { markSessionEventWakeWorkStarted } from "./session-event-wake.js";
 
@@ -94,10 +95,7 @@ export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<Heart
           ? "exec"
           : prepared.hasCronEvents
             ? "cron"
-            : opts.intent === "scheduled" ||
-                !wake.wakeSource ||
-                wake.wakeSource === "interval" ||
-                wake.wakeSource === "manual"
+            : opts.intent === "scheduled" || isRealHeartbeatWake(wake.wakeSource)
               ? "heartbeat"
               : wake.wakeSource,
       },
@@ -112,6 +110,7 @@ export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<Heart
       replyOptions: withReplySystemEventContext<InternalGetReplyOptions>(
         {
           isHeartbeat: true,
+          useHeartbeatFailureCopy: isRealHeartbeatWake(wake.wakeSource),
           // Isolated heartbeats mint a fresh session ID per run, so nothing later
           // reuses this run's bundle MCP runtime; retire it at settlement.
           ...(prepared.run.kind === "isolated" ? { cleanupBundleMcpOnRunEnd: true } : {}),
