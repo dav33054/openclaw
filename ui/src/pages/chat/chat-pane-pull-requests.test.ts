@@ -55,6 +55,7 @@ function createPullRequestPane(sessions: SessionCapability) {
     sessions: sessionCapability,
   });
   harness.pane.context.gateway.snapshot.hello = {
+    auth: { role: "operator", scopes: ["operator.read", "operator.write"] },
     features: { methods: [SESSION_PULL_REQUESTS_SUBSCRIBE_METHOD] },
   } as never;
   return { ...harness, request };
@@ -81,7 +82,10 @@ function emitSnapshot(
   });
 }
 
-function createPublicationPane(scope?: "global" | "per-sender") {
+function createPublicationPane(
+  scope?: "global" | "per-sender",
+  operatorScopes = ["operator.read", "operator.write"],
+) {
   const agentId = scope ? "research" : "main";
   const sessionKey = scope ? "global" : "agent:main:publication";
   const shared = { source: "system-configured", accountId: 1, login: "system-bot" };
@@ -112,8 +116,13 @@ function createPublicationPane(scope?: "global" | "per-sender") {
   const initial = createInitializationContext();
   const eventListeners = new Set<GatewayEventListener>();
   const hello = gatewayHelloForMethods(
-    ["sessions.github.publish", SESSION_PULL_REQUESTS_SUBSCRIBE_METHOD, "projects.list"],
-    ["operator.read", "operator.write"],
+    [
+      "sessions.github.publish",
+      "sessions.github.options",
+      SESSION_PULL_REQUESTS_SUBSCRIBE_METHOD,
+      "projects.list",
+    ],
+    operatorScopes,
   );
   if (scope) {
     hello.snapshot = {
@@ -211,6 +220,15 @@ function createPublicationPane(scope?: "global" | "per-sender") {
 }
 
 describe("chat pane pushed pull request state", () => {
+  it("does not attach the publication card from an advertised method without read access", () => {
+    const { pane, request } = createPublicationPane(undefined, [
+      "operator.sessions.read",
+      "operator.sessions.write",
+    ]);
+    pane.render();
+    expect(pane.chatProps?.githubPublication).toBeUndefined();
+    expect(request.mock.calls.some(([method]) => method === "sessions.github.options")).toBe(false);
+  });
   it("keeps the pane quiet for unrelated PR snapshots while publishing its own changes", () => {
     const { pane, state, emitGatewayEvent } = createPullRequestPane({
       capturePullRequestEpoch: vi.fn(() => ({})),
