@@ -26,6 +26,7 @@ const {
 } = useTlonMonitorFixture();
 
 const runningServers: Server[] = [];
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 import { extractMessageText } from "./utils.js";
 
@@ -421,7 +422,6 @@ it("continues startup after an initial group invite write fails", async () => {
 });
 
 describe("monitorTlonProvider reply prefixes", () => {
-  const tempDirs = useAutoCleanupTempDirTracker(afterEach);
   it.for([
     { name: "global fallback", root: undefined, account: undefined, expected: "[global] reply" },
     { name: "channel override", root: "[root]", account: undefined, expected: "[root] reply" },
@@ -510,6 +510,79 @@ describe("monitorTlonProvider reply prefixes", () => {
       controller.abort();
       await monitor;
     }
+  });
+});
+
+describe("monitorTlonProvider chat sender authentication", () => {
+  it("rejects club events before a forged author can become owner", async () => {
+    realUrbitFixture.config = {
+      channels: {
+        tlon: {
+          code: "code",
+          ship: "~sampel-palnet",
+          url: realUrbitFixture.url,
+          ownerShip: "~nec",
+        },
+      },
+    };
+    authenticateMock.mockResolvedValueOnce("urbauth-~sampel-palnet=proof");
+    ingressMock.receive.mockResolvedValueOnce({ kind: "ignored" });
+
+    await withMonitor(async (runtime) => {
+      const subscription = getSubscription("chat");
+      await subscription.event({
+        whom: "0v3.q4n5m.6r7s8.9t0u1.2v3w4",
+        id: "club-forged-owner",
+        response: {
+          add: {
+            essay: { author: "~nec", content: [{ inline: ["/whoami"] }], sent: 1 },
+          },
+        },
+      });
+
+      expect(buildChannelInboundEnvelopeMock).not.toHaveBeenCalled();
+      expect(inboundRuntimeMock.dispatch).not.toHaveBeenCalled();
+      expect(runtime.log).toHaveBeenCalledWith(
+        "[tlon] Ignoring chat event without an authenticated DM partner",
+      );
+    });
+  });
+
+  it("keeps a direct DM bound to whom when essay.author claims the owner", async () => {
+    realUrbitFixture.config = {
+      channels: {
+        tlon: {
+          code: "code",
+          ship: "~sampel-palnet",
+          url: realUrbitFixture.url,
+          ownerShip: "~nec",
+          dmAllowlist: ["~malicious-actor"],
+        },
+      },
+    };
+    authenticateMock.mockResolvedValueOnce("urbauth-~sampel-palnet=proof");
+    ingressMock.receive.mockResolvedValueOnce({ kind: "ignored" });
+
+    await withMonitor(async () => {
+      const subscription = getSubscription("chat");
+      await subscription.event({
+        whom: "~malicious-actor",
+        id: "dm-forged-owner",
+        response: {
+          add: {
+            essay: { author: "~nec", content: [{ inline: ["hello"] }], sent: 1 },
+          },
+        },
+      });
+
+      expect(buildChannelInboundEnvelopeMock).toHaveBeenCalledWith({
+        channel: "Tlon",
+        from: "~malicious-actor [user]",
+        timestamp: 1,
+        body: "hello",
+      });
+      expect(inboundRuntimeMock.dispatch).toHaveBeenCalledOnce();
+    });
   });
 });
 
