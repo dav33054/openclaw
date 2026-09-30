@@ -12,7 +12,7 @@ import type {
   WebPushVapidPublicKeyParams,
 } from "./schema-modules.js";
 import { WorkerComputerParamsSchema } from "./schema/worker-computer.js";
-import { checkProtocolJson } from "./validation-errors.js";
+import { checkWorkerProtocolJson } from "./schema/worker-protocol-primitives.js";
 export { validateApprovalPresentation } from "./approval-result-validators.js";
 export {
   validateDecisionReceiptV1,
@@ -36,12 +36,7 @@ export const validateWorkerHeartbeatParams = compile(S.WorkerHeartbeatParamsSche
 export const validateWorkerSessionsSpawnParams = compile(S.WorkerSessionsSpawnParamsSchema);
 export const validateWorkerSessionsSendParams = compile(S.WorkerSessionsSendParamsSchema);
 export const validateWorkerPortalParams = compile(S.WorkerPortalParamsSchema);
-export const validateWorkerPresenceParams = compile(S.WorkerPresenceParamsSchema);
 export const validateWorkerComputerParams = compile(WorkerComputerParamsSchema);
-
-function checkWorkerProtocolJson(data: unknown) {
-  return checkProtocolJson(data, S.WORKER_TRANSCRIPT_MAX_JSON_DEPTH);
-}
 
 export const validateWorkerTranscriptCommitParams = compile(
   S.WorkerTranscriptCommitParamsSchema,
