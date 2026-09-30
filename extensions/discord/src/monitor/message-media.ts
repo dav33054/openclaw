@@ -82,14 +82,6 @@ function isDiscordAudioAttachmentFileName(fileName?: string | null): boolean {
   return Boolean(ext && AUDIO_ATTACHMENT_EXTENSIONS.has(ext));
 }
 
-function isDiscordVoiceWaveform(attachment: APIAttachment): boolean {
-  return typeof attachment.waveform === "string";
-}
-
-function isDiscordVoiceDurationOnly(attachment: APIAttachment): boolean {
-  return typeof attachment.duration_secs === "number" && !isDiscordVoiceWaveform(attachment);
-}
-
 const NON_DEFINITIVE_MEDIA_TYPES = new Set([
   "application/octet-stream",
   "binary/octet-stream",
@@ -133,9 +125,9 @@ function resolveDiscordMediaClassification(params: {
     mime?.startsWith("video/") === true || mime?.startsWith("image/") === true;
   const audioKind =
     mime?.startsWith("audio/") ||
-    isDiscordVoiceWaveform(params.attachment) ||
+    typeof params.attachment.waveform === "string" ||
     (!definitiveVisual &&
-      (isDiscordVoiceDurationOnly(params.attachment) ||
+      (typeof params.attachment.duration_secs === "number" ||
         (isDiscordAudioAttachmentFileName(params.attachment.filename ?? params.attachment.url) &&
           !isDefinitiveMediaType(contentType))))
       ? "audio"
@@ -293,11 +285,7 @@ async function appendResolvedMediaFromAttachments(
     errorPrefix: string;
   },
 ) {
-  const attachments = params.attachments;
-  if (!attachments || attachments.length === 0) {
-    return;
-  }
-  for (const attachment of attachments) {
+  for (const attachment of params.attachments ?? []) {
     const attachmentUrl = normalizeOptionalString(attachment.url);
     if (!attachmentUrl) {
       logVerbose(
@@ -308,15 +296,9 @@ async function appendResolvedMediaFromAttachments(
     }
     try {
       const saved = await fetchDiscordMedia({
+        ...params,
         url: attachmentUrl,
         filePathHint: attachment.filename ?? attachmentUrl,
-        maxBytes: params.maxBytes,
-        fetchImpl: params.fetchImpl,
-        ssrfPolicy: params.ssrfPolicy,
-        readIdleTimeoutMs: params.readIdleTimeoutMs,
-        totalTimeoutMs: params.totalTimeoutMs,
-        abortSignal: params.abortSignal,
-        endpointRuntime: params.endpointRuntime,
         fallbackContentType: attachment.content_type,
         originalFilename: attachment.filename,
       });
@@ -337,10 +319,7 @@ async function appendResolvedMediaFromAttachments(
       getChildLogger({ module: "discord-media" }).warn(
         `${params.errorPrefix} ${id}: ${String(err)}`,
       );
-      const classification = resolveDiscordMediaClassification({ attachment });
-      params.out.push({
-        ...classification,
-      });
+      params.out.push(resolveDiscordMediaClassification({ attachment }));
     }
   }
 }
@@ -403,25 +382,15 @@ async function appendResolvedMediaFromStickers(
     errorPrefix: string;
   },
 ) {
-  const stickers = params.stickers;
-  if (!stickers || stickers.length === 0) {
-    return;
-  }
-  for (const sticker of stickers) {
+  for (const sticker of params.stickers ?? []) {
     const candidates = resolveStickerAssetCandidates(sticker);
     let lastError: unknown;
     for (const candidate of candidates) {
       try {
         const saved = await fetchDiscordMedia({
+          ...params,
           url: candidate.url,
           filePathHint: candidate.fileName,
-          maxBytes: params.maxBytes,
-          fetchImpl: params.fetchImpl,
-          ssrfPolicy: params.ssrfPolicy,
-          readIdleTimeoutMs: params.readIdleTimeoutMs,
-          totalTimeoutMs: params.totalTimeoutMs,
-          abortSignal: params.abortSignal,
-          endpointRuntime: params.endpointRuntime,
           fallbackContentType: inferStickerContentType(sticker),
           originalFilename: candidate.fileName,
         });
