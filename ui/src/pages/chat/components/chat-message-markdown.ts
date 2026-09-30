@@ -24,14 +24,12 @@ import { extractMessageMediaText } from "./chat-message-media.ts";
 
 registerChatMessageMetadataEnglish();
 
-export type MessageReplyTarget = ChatReplyTarget;
-
 export type MessageActionDetails = {
   /** Source for context copy, independent of footer visibility and reply truncation. */
   copyMarkdown?: string;
   markdown?: string;
   fullMessage?: { messageId: string; state: AssistantMessageExpansionState | undefined };
-  replyTarget?: MessageReplyTarget;
+  replyTarget?: ChatReplyTarget;
 };
 
 // Loading and completion each advance the revision: three automatic attempts.
@@ -83,7 +81,7 @@ export function resolveMessageActionDetails(
     getAssistantMessageExpansion?: (
       messageId: string,
     ) => AssistantMessageExpansionState | undefined;
-    onReply?: (target: MessageReplyTarget) => void;
+    onReply?: (target: ChatReplyTarget) => void;
     senderLabel: string;
   },
 ): MessageActionDetails | null {
@@ -127,7 +125,7 @@ export function resolveMessageActionDetails(
 export function renderMessageActionButtons(
   details: MessageActionDetails,
   opts: {
-    onReply?: (target: MessageReplyTarget) => void;
+    onReply?: (target: ChatReplyTarget) => void;
   },
 ) {
   return html`
@@ -141,8 +139,8 @@ export function renderMessageActionButtons(
 }
 
 export function renderReplyButton(
-  target: MessageReplyTarget,
-  onReply: (target: MessageReplyTarget) => void,
+  target: ChatReplyTarget,
+  onReply: (target: ChatReplyTarget) => void,
 ) {
   return html`
     <openclaw-tooltip .content=${t("chat.messages.reply")}>

@@ -26,6 +26,7 @@ import type {
   ChatAttachment,
   ChatGuardianNotice,
   ChatQueueItem,
+  ChatReplyTarget,
   ChatSelectionSource,
   ChatStreamSegment,
 } from "../../../lib/chat/chat-types.ts";
@@ -42,15 +43,14 @@ import type { CompactionStatus, RunOutputUsage } from "../tool-stream-contract.t
 import type { AsyncQuestionDraft, AsyncQuestionPresentation } from "./chat-async-question.types.ts";
 import { resolveChatContextCopy, usesNativeContextMenu } from "./chat-context-copy.ts";
 import type { ChatHistoryBoundaryProps } from "./chat-history-boundary.ts";
-import { isConfirmedActionPopoverFocused } from "./chat-message-confirmation.ts";
+import {
+  dismissConfirmedActionPopovers,
+  isConfirmedActionPopoverFocused,
+  openChatRewindConfirmation,
+} from "./chat-message-confirmation.ts";
 import type { MessageActionDetails } from "./chat-message-markdown.ts";
 import type { ArtifactDownloadResolver } from "./chat-message-media.ts";
 import type { ChatSendStatusActions } from "./chat-message-send-status.ts";
-import {
-  dismissConfirmedActionPopovers,
-  openChatRewindConfirmation,
-  type MessageReplyTarget,
-} from "./chat-message.ts";
 import {
   handleChatSelectionPointerUp,
   isChatSelectionPopupFocused,
@@ -83,7 +83,7 @@ export type ChatThreadState = {
       string,
       readonly import("./chat-turn-video-gallery.ts").TurnVideoMessage[]
     >;
-    onSetReply?: (target: MessageReplyTarget) => void;
+    onSetReply?: (target: ChatReplyTarget) => void;
     onOpenReply?: (replyToId: string) => void;
     onAsyncQuestionDiscard?: (item: ChatQueueItem) => void;
     onAsyncQuestionSubmit?: (
@@ -188,7 +188,7 @@ export type ChatThreadProps = ChatSendStatusActions & {
   onHistoryIntent?: (event: Event) => void;
   onDraftChange: (next: string) => void;
   onSend: () => void;
-  onSetReply?: (target: MessageReplyTarget) => void;
+  onSetReply?: (target: ChatReplyTarget) => void;
   replyMessageAccess?: ReplyMessageAccess;
   onRewindMessage?: (entryId: string) => Promise<boolean> | boolean;
   onForkMessage?: (entryId: string) => Promise<void> | void;

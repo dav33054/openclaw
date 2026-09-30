@@ -38,17 +38,15 @@ import { hasForwardedSource } from "../chat-turn-boundary.ts";
 import { renderAgentRunFrame } from "./chat-agent-run-frame.ts";
 import { resolveChatDefaultAvatarPlacement } from "./chat-author-avatar.ts";
 import { buildChatArchiveNotice, renderChatDivider, renderChatNotice } from "./chat-divider.ts";
+import { renderActivityGroup, renderMessageGroup } from "./chat-message-group.ts";
 import { resolveMessageReplyText } from "./chat-message-markdown.ts";
-import { assistantMediaPolicyKey } from "./chat-message-media.ts";
+import { assistantMediaPolicyKey, getChatMediaRenderVersion } from "./chat-message-media.ts";
 import {
-  getChatMediaRenderVersion,
-  renderActivityGroup,
-  renderMessageGroup,
   renderStreamGroup,
   renderWorkGroupSummary,
   type StreamGroupOptions,
   type StreamGroupPart,
-} from "./chat-message.ts";
+} from "./chat-message-stream.ts";
 import { renderRealtimeTalkConversation } from "./chat-realtime-controls.ts";
 import { createReplyPreviewResolver } from "./chat-reply-preview.ts";
 import {
