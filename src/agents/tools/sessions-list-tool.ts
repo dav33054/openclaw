@@ -427,6 +427,7 @@ export function createSessionsListTool(opts?: {
         // Sentinel keys alone carry no agent identity; use the prepared store owner.
         const stateVersion = stateVersions[resolvedAgentId]?.[key];
         const rowLabel = readStringValue(entry.label);
+        const color = readStringValue(entry.color);
         // Gateway rows carry groups under the legacy wire field `category`.
         const group = readStringValue(entry.category);
         const displayName = readStringValue(entry.displayName);
@@ -466,6 +467,7 @@ export function createSessionsListTool(opts?: {
           archived: entry.archived === true,
           pinned: entry.pinned === true,
           ...(rowLabel ? { label: rowLabel } : {}),
+          ...(color ? { color } : {}),
           ...(entry.createdActor
             ? { createdActor: projectInventoryActor(entry.createdActor) }
             : {}),
