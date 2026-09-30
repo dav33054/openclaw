@@ -996,7 +996,7 @@ describe("sessions_spawn tool", () => {
         spawnDepth: 1,
       }),
       expect.objectContaining({ via: "spawn", requesterSessionKey: "agent:main:main" }),
-      undefined,
+      { timeoutMs: 120_000 },
     );
     expect(mockCallArg(callGateway, 0, 1, "sessions.create")).not.toHaveProperty("fork");
     const creation = mockCallArg(callGateway, 0, 2, "sessions.create");
@@ -1252,7 +1252,7 @@ describe("sessions_spawn tool", () => {
           "sessions.create",
           expect.objectContaining({ parentSessionKey }),
           expect.objectContaining({ requesterSessionKey: parentSessionKey }),
-          undefined,
+          { timeoutMs: 120_000 },
         );
       });
     },

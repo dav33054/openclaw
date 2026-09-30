@@ -5,6 +5,14 @@ import type { SessionCreateParams } from "../../lib/sessions/create.ts";
 import { normalizeAgentId } from "../../lib/sessions/session-key.ts";
 
 const WORKTREE_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+// The Gateway validates these against its published model catalog before it creates the session.
+const MODEL_CATALOG_CREATE_FIELDS = [
+  "catalogId",
+  "model",
+  "agentRuntime",
+  "contextWindow",
+  "thinkingLevel",
+] as const;
 
 /**
  * One closed visibility mode instead of independent incognito/draft booleans:
@@ -33,6 +41,20 @@ export function canStartSessionAsDraft(params: {
   return (
     params.allowedVisibilities?.includes("draft") === true && params.hasMultipleIdentities === true
   );
+}
+
+/** The create with the Gateway's default model; undefined when it selects nothing catalog-bound. */
+export function withoutModelCatalogSelection(
+  params: SessionCreateParams,
+): SessionCreateParams | undefined {
+  if (!MODEL_CATALOG_CREATE_FIELDS.some((field) => params[field] !== undefined)) {
+    return undefined;
+  }
+  const next = { ...params };
+  for (const field of MODEL_CATALOG_CREATE_FIELDS) {
+    delete next[field];
+  }
+  return next;
 }
 
 export function isWorktreeNameValid(value: string): boolean {

@@ -111,6 +111,29 @@ describe("trusted in-process Gateway session creation", () => {
     );
   });
 
+  it.each([
+    ["plain creation", {}],
+    [
+      "visible-spawn policy",
+      { inheritedToolPolicy: { version: 1 as const, allow: ["sessions_spawn"], deny: [] } },
+    ],
+  ])("keeps the caller's transport deadline on %s fallback dispatch", async (_label, extra) => {
+    mocks.hasContext = false;
+    const creation = {
+      via: "spawn" as const,
+      actor: { type: "agent" as const, id: "main" },
+      requesterSessionKey: "agent:main:main",
+      ...extra,
+    };
+
+    await callInProcessGatewayToolWithCreation("sessions.create", { agentId: "main" }, creation, {
+      timeoutMs: 45_000,
+    });
+
+    expect(mocks.callGatewayTool).toHaveBeenCalledOnce();
+    expect(mocks.callGatewayTool.mock.calls[0]?.[1]).toEqual({ timeoutMs: 45_000 });
+  });
+
   it("keeps session-bound delivery in its admitted Gateway instead of dropping its binding on transport", async () => {
     const generation = {
       agentId: "main",

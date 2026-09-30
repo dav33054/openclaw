@@ -1,5 +1,7 @@
 import "./sessions-spawn-tool.mocks.test-support.js";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { GatewayClientRequestError } from "../../../packages/gateway-client/src/request-error.js";
+import { modelCatalogLoadingError } from "../../gateway/model-catalog-wait.js";
 import {
   expectRegisteredSubagentRun,
   supportedSpawnModelChoice,
@@ -74,11 +76,58 @@ describe("sessions_spawn visible work receipts", () => {
           deny: ["exec"],
         },
       },
-      undefined,
+      { timeoutMs: 120_000 },
     );
     expectRegisteredSubagentRun(registerRun, {
       childSessionKey: "agent:main:dashboard:restricted-child",
       runId: "run-visible-restricted",
+    });
+  });
+
+  describe("while the model catalog is still loading", () => {
+    const catalogLoading = () => new GatewayClientRequestError(modelCatalogLoadingError());
+    const createTool = () =>
+      createSessionsSpawnTool({
+        agentSessionKey: "agent:main:main",
+        config: { agents: { defaults: { model: "mock-provider/primary" } } },
+        registerRun: vi.fn(),
+        countActiveRuns: () => 0,
+      });
+
+    it("keeps waiting across catalog-loading answers instead of failing the tool call", async () => {
+      hoisted.inProcessCreationMock
+        .mockRejectedValueOnce(catalogLoading())
+        .mockRejectedValueOnce(catalogLoading())
+        .mockResolvedValue({
+          key: "agent:main:dashboard:late-catalog",
+          runStarted: true,
+          runId: "run-late-catalog",
+        });
+
+      const result = await createTool().execute("visible-late-catalog", {
+        task: "inspect",
+        visible: true,
+      });
+
+      expect(result.details).toMatchObject({
+        status: "accepted",
+        childSessionKey: "agent:main:dashboard:late-catalog",
+        runId: "run-late-catalog",
+      });
+      expect(hoisted.inProcessCreationMock.mock.calls.map((call) => [call[0], call[3]])).toEqual([
+        ["sessions.create", { timeoutMs: 120_000 }],
+        ["sessions.create", { timeoutMs: 120_000 }],
+        ["sessions.create", { timeoutMs: 120_000 }],
+      ]);
+    });
+
+    it("surfaces the retryable catalog-loading error after a bounded number of waits", async () => {
+      hoisted.inProcessCreationMock.mockRejectedValue(catalogLoading());
+
+      await expect(
+        createTool().execute("visible-catalog-never-publishes", { task: "inspect", visible: true }),
+      ).rejects.toThrow("Models are still loading; retry in a moment.");
+      expect(hoisted.inProcessCreationMock).toHaveBeenCalledTimes(4);
     });
   });
 });

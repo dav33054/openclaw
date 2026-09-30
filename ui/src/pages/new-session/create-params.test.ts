@@ -1,6 +1,10 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { buildDraftSessionCreateParams, canStartSessionAsDraft } from "./create-params.ts";
+import {
+  buildDraftSessionCreateParams,
+  canStartSessionAsDraft,
+  withoutModelCatalogSelection,
+} from "./create-params.ts";
 
 describe("create-as-draft availability", () => {
   it("requires both draft policy and multiple creator identities", () => {
@@ -290,5 +294,35 @@ describe("buildDraftSessionCreateParams", () => {
       worktree: true,
       worktreeBaseRef: "main",
     });
+  });
+});
+
+describe("withoutModelCatalogSelection", () => {
+  it("drops a catalog entry the same way as an explicit model selection", () => {
+    const catalogEntry = buildDraftSessionCreateParams({
+      agentId: "main",
+      message: "Review the deployment plan",
+      visibility: "normal",
+      worktree: false,
+      catalogId: "catalog-entry-1",
+      category: "ops",
+      model: "openai/gpt-5.6-sol",
+      thinkingLevel: "high",
+    });
+
+    expect(catalogEntry).toEqual({
+      agentId: "main",
+      message: "Review the deployment plan",
+      catalogId: "catalog-entry-1",
+      category: "ops",
+    });
+    expect(withoutModelCatalogSelection(catalogEntry)).toEqual({
+      agentId: "main",
+      message: "Review the deployment plan",
+      category: "ops",
+    });
+    expect(
+      withoutModelCatalogSelection({ agentId: "main", message: "Review the deployment plan" }),
+    ).toBeUndefined();
   });
 });
