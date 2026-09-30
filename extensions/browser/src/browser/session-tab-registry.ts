@@ -28,7 +28,6 @@ import {
 import {
   readBrowserDashboardStopIntents,
   withBrowserSessionTabOperation,
-  type BrowserSessionTabRecord,
 } from "./session-tab-store.js";
 import {
   selectStaleTrackedTabs,
@@ -163,7 +162,7 @@ async function performVolatileCleanup(
   }
 }
 
-async function closeTrackedTabs(
+export async function closeTrackedTabs(
   tabs: TrackedTab[],
   params: CloseParams & { cleanupKind: CleanupKind; now?: number },
 ): Promise<number> {
@@ -320,24 +319,4 @@ export async function sweepTrackedBrowserTabs(
       ))
     );
   });
-}
-
-/** Browser dashboard lifetime changes reuse fingerprinted cleanup and its claim owner. */
-export async function closeBrowserDashboardTabs(
-  tabs: Array<BrowserSessionTabRecord & { storageKey: string }>,
-  params: CloseParams = {},
-): Promise<number> {
-  return await closeTrackedTabs(
-    tabs.map((tab) => ({ ...tab, kind: "durable" as const })),
-    {
-      ...params,
-      getResolvedBrowserConfig:
-        params.getResolvedBrowserConfig ??
-        (async () => {
-          const { getBrowserControlState } = await import("../browser-control-state.js");
-          return getBrowserControlState()?.resolved ?? null;
-        }),
-      cleanupKind: "lifecycle",
-    },
-  );
 }

@@ -36,11 +36,11 @@ import {
   findSessionRepositoryWorkspaces,
 } from "../../state/session-repository-workspaces.js";
 import { resolveSessionStorePathCore } from "./paths.js";
+import type { ResolvedSqliteReadScope } from "./session-accessor.sqlite-contract.js";
 import { readSessionEntryRow } from "./session-accessor.sqlite-entry-read.js";
 import {
   runExclusiveSqliteSessionWrite,
   toDatabaseOptions,
-  type ResolvedSqliteReadScope,
 } from "./session-accessor.sqlite-scope.js";
 import type { SqliteSessionWriteOperation } from "./session-accessor.sqlite-write-operation.js";
 import type { SessionEntryCreateWithTranscriptOptions } from "./session-accessor.types.js";
@@ -48,6 +48,7 @@ import type {
   CapturedSessionEntryCurrentRead,
   SessionEntryCurrentFacts,
 } from "./session-entry-current.types.js";
+import { withSessionEntryReadOnlyInWorker } from "./session-entry-read-runtime.js";
 import type { SessionEntry } from "./types.js";
 
 type DeletionEntry = { sessionKey: string; entry: SessionEntry };
@@ -255,11 +256,8 @@ async function withSqliteSessionMutations<T>(
       };
       assertCurrent();
       if (execution && repositoryWorkspaces.length > 0) {
-        const [{ captureSessionEntryCurrentRead }, { withSessionEntryReadOnlyInWorker }] =
-          await Promise.all([
-            import("./session-entry-current-runtime.js"),
-            import("./session-entry-read-runtime.js"),
-          ]);
+        const { captureSessionEntryCurrentRead } =
+          await import("./session-entry-current-runtime.js");
         assertCurrent();
         for (const workspace of repositoryWorkspaces) {
           const readScope = {

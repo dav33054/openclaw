@@ -19,6 +19,13 @@ export const WORKER_BUNDLE_ARTIFACT_PATHS = [
   WORKER_BUNDLE_RSYNC_RECEIVER_PATH,
 ] as const;
 
+export const WORKER_BUNDLE_CHUNK_PATH_PATTERN = /^worker-chunk-[A-Za-z0-9_-]+\.mjs$/u;
+
+/** Build-owned flat chunks share the entry directory so relocated process URLs stay valid. */
+export function isWorkerBundleChunkPath(value: string): boolean {
+  return WORKER_BUNDLE_CHUNK_PATH_PATTERN.test(value);
+}
+
 /** Immutable source archive within the running node's owning package, outside its dist inventory. */
 export function workerBundleArchiveRelativePath(sha256: string): string {
   if (!/^[a-f0-9]{64}$/u.test(sha256)) {
