@@ -204,6 +204,7 @@ export async function runEmbeddedFallbackCandidate(
         onDeferredLifecycleOwner: params.deferredLifecycle.adopt,
         onDeferredLifecycleAbort: params.deferredLifecycle.abort,
         onRetryWait: params.deferredLifecycle.beginRetryWait,
+        onCompletedSourceReplyDelivered: params.onCompletedSourceReplyDelivered,
         onExecutionStarted: (info) => {
           if (info?.lifecycleGeneration) {
             params.onLifecycleGeneration(info.lifecycleGeneration);
