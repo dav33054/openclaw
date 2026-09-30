@@ -19202,6 +19202,7 @@ public struct SkillsCuratorLiveStatusResult: Codable, Sendable {
     public let counts: [String: AnyCodable]
     public let skills: [SkillCuratorLiveEntry]
     public let overlaps: [[String: AnyCodable]]
+    public let diagnostics: [String: AnyCodable]?
     public let inventory: String
 
     public init(
@@ -19213,6 +19214,7 @@ public struct SkillsCuratorLiveStatusResult: Codable, Sendable {
         counts: [String: AnyCodable],
         skills: [SkillCuratorLiveEntry],
         overlaps: [[String: AnyCodable]],
+        diagnostics: [String: AnyCodable]? = nil,
         inventory: String)
     {
         self.lastattemptatms = lastattemptatms
@@ -19223,6 +19225,7 @@ public struct SkillsCuratorLiveStatusResult: Codable, Sendable {
         self.counts = counts
         self.skills = skills
         self.overlaps = overlaps
+        self.diagnostics = diagnostics
         self.inventory = inventory
     }
 
@@ -19235,6 +19238,7 @@ public struct SkillsCuratorLiveStatusResult: Codable, Sendable {
         case counts
         case skills
         case overlaps
+        case diagnostics
         case inventory
     }
 }
@@ -19250,6 +19254,7 @@ public struct SkillsCuratorStatusResult: Codable, Sendable {
     public let counts: [String: AnyCodable]
     public let skills: [SkillsCuratorActionResult]
     public let overlaps: [[String: AnyCodable]]
+    public let diagnostics: [String: AnyCodable]?
 
     public init(
         lastattemptatms: AnyCodable,
@@ -19259,7 +19264,8 @@ public struct SkillsCuratorStatusResult: Codable, Sendable {
         experiencereview: [String: AnyCodable]? = nil,
         counts: [String: AnyCodable],
         skills: [SkillsCuratorActionResult],
-        overlaps: [[String: AnyCodable]])
+        overlaps: [[String: AnyCodable]],
+        diagnostics: [String: AnyCodable]? = nil)
     {
         self.lastattemptatms = lastattemptatms
         self.lastsuccessatms = lastsuccessatms
@@ -19269,6 +19275,7 @@ public struct SkillsCuratorStatusResult: Codable, Sendable {
         self.counts = counts
         self.skills = skills
         self.overlaps = overlaps
+        self.diagnostics = diagnostics
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -19280,6 +19287,7 @@ public struct SkillsCuratorStatusResult: Codable, Sendable {
         case counts
         case skills
         case overlaps
+        case diagnostics
     }
 }
 
