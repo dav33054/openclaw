@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { clampPositiveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
@@ -513,6 +514,10 @@ async function describeImagesWithModelInternal(
     });
 
     const maxTokens = resolveImageToolMaxTokens(model.maxTokens, params.maxTokens);
+    // One image request keeps one conversation identity across the reasoning-only retry: the
+    // transport derives OpenCode's routing header from it, so re-rolling it per attempt would
+    // split a single image request across two provider conversations.
+    const imageSessionId = params.sessionId ?? randomUUID();
     const completeImage = async (onPayload?: ProviderStreamOptions["onPayload"]) => {
       params.signal?.throwIfAborted();
       assertResourcesOpen?.();
@@ -523,6 +528,7 @@ async function describeImagesWithModelInternal(
         apiKey,
         maxTokens,
         signal: requestSignal,
+        sessionId: imageSessionId,
         ...(timeoutMs !== undefined ? { timeoutMs } : {}),
         ...(headers ? { headers } : {}),
         ...(payloadHandler ? { onPayload: payloadHandler } : {}),
@@ -594,6 +600,7 @@ function toImagesDescriptionRequest(params: ImageDescriptionRequest): ImagesDesc
     authStore: params.authStore,
     ...(params.agentId ? { agentId: params.agentId } : {}),
     agentDir: params.agentDir,
+    ...(params.sessionId ? { sessionId: params.sessionId } : {}),
     ...(params.workspaceDir ? { workspaceDir: params.workspaceDir } : {}),
     ...(params.preparedModelRuntime ? { preparedModelRuntime: params.preparedModelRuntime } : {}),
     cfg: params.cfg,
