@@ -427,6 +427,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
     messageThreadId: params.messageThreadId,
     conversationToolPolicy: params.conversationToolPolicy,
     messageActionTurnCapability: params.messageActionTurnCapability,
+    onCompletedSourceReplyDelivered: params.onCompletedSourceReplyDelivered,
     groupId: params.groupId,
     groupChannel: params.groupChannel,
     groupSpace: params.groupSpace,
