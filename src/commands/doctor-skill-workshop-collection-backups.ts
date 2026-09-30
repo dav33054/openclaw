@@ -85,12 +85,7 @@ export async function listPendingLegacyCollectionBackupRoots(
       const archivedBackups = await Promise.all(
         backups.map(async (backup) => {
           for (const agentBackupRoot of agentBackupRoots) {
-            if (
-              await isHistoryOnlyBackup(
-                path.join(agentBackupRoot, backup.manifest.id),
-                backup.manifest.createdAt,
-              )
-            ) {
+            if (await isHistoryOnlyBackup(backup, path.join(agentBackupRoot, backup.manifest.id))) {
               return true;
             }
           }
@@ -152,10 +147,7 @@ export async function listPendingLegacyCollectionBackupRoots(
       }
       const alreadyArchived = await Promise.all(
         pendingBackups.map((backup) =>
-          isHistoryOnlyBackup(
-            path.join(destinationRoot, backup.manifest.id),
-            backup.manifest.createdAt,
-          ),
+          isHistoryOnlyBackup(backup, path.join(destinationRoot, backup.manifest.id)),
         ),
       );
       // History-only archives retain their source. Exclude each completed copy
@@ -346,19 +338,53 @@ async function hasNewerUnrelatedCollectionBackup(
 }
 
 async function isHistoryOnlyBackup(
+  backup: LegacyCollectionBackup,
   backupDir: string,
-  expectedCreatedAt?: string,
 ): Promise<boolean> {
   try {
     const record = asNullableRecord(
       JSON.parse(await fs.readFile(path.join(backupDir, "manifest.json"), "utf8")),
     );
-    return (
+    if (
       record?.schema === "openclaw.skill-collection-backup.v2" &&
       record.id === path.basename(backupDir) &&
-      (expectedCreatedAt === undefined || record.createdAt === expectedCreatedAt) &&
+      record.createdAt === backup.manifest.createdAt &&
       typeof record.restoreUnavailableReason === "string"
-    );
+    ) {
+      const retainedWorkspace = path.join(backup.backupDir, "workspace");
+      const archivedWorkspace = path.join(backupDir, "history", "workspace");
+      const [retainedRoot, archivedRoot] = await Promise.all([
+        fs.lstat(retainedWorkspace),
+        fs.lstat(archivedWorkspace),
+      ]);
+      if (!retainedRoot.isDirectory() || !archivedRoot.isDirectory()) {
+        return false;
+      }
+
+      // History-only archives keep the original workspace tree. The manifest
+      // match is not enough: only suppress a retained source when every saved
+      // skill tree is still present and identical in the archive.
+      const contentMatches = await Promise.all(
+        [...backup.sourceDirs.values()].map(async (relativeDir) => {
+          const retainedSkill = path.join(retainedWorkspace, relativeDir);
+          const archivedSkill = path.join(archivedWorkspace, relativeDir);
+          const [retainedStat, archivedStat] = await Promise.all([
+            fs.lstat(retainedSkill),
+            fs.lstat(archivedSkill),
+          ]);
+          if (!retainedStat.isDirectory() || !archivedStat.isDirectory()) {
+            return false;
+          }
+          const [retainedHash, archivedHash] = await Promise.all([
+            readSkillProposalTargetTreeSha256(retainedSkill, { includeRootMetadata: true }),
+            readSkillProposalTargetTreeSha256(archivedSkill, { includeRootMetadata: true }),
+          ]);
+          return retainedHash === archivedHash;
+        }),
+      );
+      return contentMatches.every(Boolean);
+    }
+    return false;
   } catch {
     return false;
   }
