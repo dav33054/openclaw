@@ -3,7 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { withEnv } from "../test-utils/env.js";
-import { replacePatternBounded } from "./redact-bounded.js";
 import { TOOL_PAYLOAD_AMBIGUOUS_ASSIGNMENT_PATTERNS } from "./redact-patterns.js";
 import { redactSourceInputTextWithConfig } from "./redact-source.js";
 import {
@@ -45,35 +44,19 @@ afterEach(() => {
   tempDirs = [];
 });
 
-describe("bounded replacement output", () => {
-  it.each<[RegExp, string, string]>([
-    [/none/g, "blue", "aaaabbbbcccc"],
-    [/aaaa/g, "", "bbbbcccc"],
-  ])("preserves complete output for %s", (pattern, replacement, expected) => {
-    expect(
-      replacePatternBounded("aaaabbbbcccc", pattern, () => replacement, {
-        chunkThreshold: 4,
-        chunkSize: 4,
-      }),
-    ).toBe(expected);
-  });
-
-  it("keeps calling a stateful replacer after unchanged results", () => {
+describe("whole-text rule replacement", () => {
+  it("applies replacements across the full text without slicing", () => {
+    const pattern = /red/g;
     const calls: Array<{ match: string; offset: number; input: string }> = [];
-    const output = replacePatternBounded(
-      "red red red",
-      /red/g,
-      (match, offset, input) => {
-        calls.push({ match, offset, input });
-        return calls.length === 3 ? "blue" : match;
-      },
-      { chunkThreshold: 4, chunkSize: 4 },
-    );
+    const output = "red red red".replace(pattern, (match, offset, input) => {
+      calls.push({ match, offset, input });
+      return calls.length === 3 ? "blue" : match;
+    });
     expect(output).toBe("red red blue");
     expect(calls).toEqual([
-      { match: "red", offset: 0, input: "red " },
-      { match: "red", offset: 0, input: "red " },
-      { match: "red", offset: 0, input: "red" },
+      { match: "red", offset: 0, input: "red red red" },
+      { match: "red", offset: 4, input: "red red red" },
+      { match: "red", offset: 8, input: "red red red" },
     ]);
   });
 });
@@ -895,7 +878,7 @@ describe("redactSensitiveText", () => {
     expect(output).toBe(input);
   });
 
-  it("masks Telegram bot tokens that cross bounded-replacement chunk boundaries", () => {
+  it("masks Telegram bot tokens placed across former chunk boundaries", () => {
     const chunkSize = 16_384;
     const credential = `123456:${"A".repeat(28)}WXYZ`;
     const cases = [
@@ -913,10 +896,9 @@ describe("redactSensitiveText", () => {
     }
   });
 
-  it("does not corrupt large data URLs across chunked replacement boundaries", () => {
-    // replacePatternBounded slices 32 KiB+ inputs into 16 KiB chunks; a chunk start must not
-    // satisfy the pure-base64 prefix boundary (`^`) or hide the `;base64,` container from its
-    // lookbehind, so the boundary patterns run unchunked.
+  it("keeps large data URLs unredacted across former chunk boundaries", () => {
+    // Whole-text matching keeps the data-URL exemption: a `;base64,` container immediately
+    // before a base64-safe token start must still suppress the boundary rules.
     const prefix = "data:application/octet-stream;base64,";
     const chunkSize = 16_384;
     const pad = "A".repeat(chunkSize * 2 - prefix.length);

@@ -146,9 +146,9 @@ describe("default pattern table", () => {
       expect(redactSensitiveText(summaryProse, { mode: "tools" })).toBe(summaryProse);
     });
 
-    it("keeps mid-sentence pass: prose when it lands on a bounded-replacement chunk start", () => {
-      // Inputs above 32 KiB are matched in 16 KiB chunks unless a pattern is registered as
-      // chunk-unsafe; a chunk start must not read as a record start for the `^` alternative.
+    it("keeps mid-sentence pass: prose that previously landed on a chunk start", () => {
+      // Whole-text matching: only a true text start reads as a record start for the `^`
+      // alternative, so mid-sentence prose stays unmasked wherever it appears.
       const clause = "the tests now pass: older clients receive compatible speed values.";
       const prefix = "prose ".repeat(4096).slice(0, 16_384 - "the tests now ".length);
       const text = `${prefix}${clause} ${"more prose ".repeat(2000)}`;

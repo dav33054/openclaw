@@ -9,6 +9,172 @@ export function parseRedactPatternSource(raw: string): [source: string, flags: s
   return [source, flags.includes("g") ? flags : `${flags}g`];
 }
 
+const OPEN_REPEAT_RE = /^\{(\d+),\}/;
+const BOUNDED_REPEAT_RE = /^\{(?:\d+(?:,\d*)?|,\d+)\}/;
+const HEX_DIGIT_RE = /[0-9A-Fa-f]/;
+const ASSERTION_ESCAPE_CHARS = new Set(["b", "B"]);
+
+/** End index (exclusive) of the single atom introduced by the escape at `i` (a backslash), or -1. */
+function escapeAtomEnd(source: string, i: number): number {
+  const kind = source[i + 1];
+  if (kind === undefined) {
+    return -1;
+  }
+  if (ASSERTION_ESCAPE_CHARS.has(kind)) {
+    return i + 2;
+  }
+  if (kind === "x") {
+    return HEX_DIGIT_RE.test(source[i + 2] ?? "") && HEX_DIGIT_RE.test(source[i + 3] ?? "")
+      ? i + 4
+      : i + 2;
+  }
+  if ((kind === "u" || kind === "p" || kind === "P") && source[i + 2] === "{") {
+    const close = source.indexOf("}", i + 3);
+    return close === -1 ? i + 2 : close + 1;
+  }
+  if (kind === "u") {
+    let end = i + 2;
+    while (end < i + 6 && HEX_DIGIT_RE.test(source[end] ?? "")) {
+      end += 1;
+    }
+    return end;
+  }
+  if (kind === "c") {
+    return i + 3;
+  }
+  if (kind >= "0" && kind <= "9") {
+    let end = i + 2;
+    for (let cursor = end; cursor < source.length; cursor += 1) {
+      const digit = source[cursor];
+      if (digit === undefined || digit < "0" || digit > "9") {
+        break;
+      }
+      end = cursor + 1;
+    }
+    return end;
+  }
+  return i + 2;
+}
+
+/** End index (exclusive) of the character class starting at `i` (an unescaped bracket). */
+function classAtomEnd(source: string, i: number): number {
+  let cursor = i + 1;
+  if (source[cursor] === "^") {
+    cursor += 1;
+  }
+  if (source[cursor] === "]") {
+    cursor += 1;
+  }
+  while (cursor < source.length) {
+    const char = source[cursor];
+    if (char === "\\") {
+      cursor += 2;
+      continue;
+    }
+    if (char === "]") {
+      return cursor + 1;
+    }
+    cursor += 1;
+  }
+  return source.length;
+}
+
+/**
+ * Rewrites open-ended repeats `X{n,}` into `X{n}X*` for flat single-character atoms `X`
+ * (one literal, one escaped atom, or one bracket class). Greedy `X{n,}` and `X{n}X*`
+ * accept the same strings in the same backtracking order, but the latter never grows one
+ * backtrack stack entry per repetition, so multi-megabyte runs no longer overflow.
+ * Bounded repeats, quantifiers after groups, and quantified atoms are left untouched.
+ */
+export function rewriteOpenEndedRepeats(source: string): string {
+  if (!source.includes("{")) {
+    return source;
+  }
+  let out = "";
+  // Half-open [atomStart, atomEnd) span of the current flat single-character atom, if any.
+  let atomStart = -1;
+  let atomEnd = -1;
+  let i = 0;
+  while (i < source.length) {
+    const char = source[i]!;
+    if (char === "\\") {
+      const end = escapeAtomEnd(source, i);
+      if (end < 0) {
+        out += char;
+        i += 1;
+        atomStart = -1;
+        continue;
+      }
+      out += source.slice(i, end);
+      if (ASSERTION_ESCAPE_CHARS.has(source[i + 1]!)) {
+        atomStart = -1;
+      } else {
+        atomStart = i;
+        atomEnd = end;
+      }
+      i = end;
+      continue;
+    }
+    if (char === "[") {
+      const end = classAtomEnd(source, i);
+      out += source.slice(i, end);
+      atomStart = i;
+      atomEnd = end;
+      i = end;
+      continue;
+    }
+    if (char === "{") {
+      const open = OPEN_REPEAT_RE.exec(source.slice(i));
+      if (open && atomStart >= 0) {
+        const atom = source.slice(atomStart, atomEnd);
+        out += `{${open[1]}}${atom}*`;
+        i += open[0].length;
+        if (source[i] === "?") {
+          out += "?";
+          i += 1;
+        }
+        atomStart = -1;
+        continue;
+      }
+      const bounded = BOUNDED_REPEAT_RE.exec(source.slice(i));
+      if (bounded) {
+        out += bounded[0];
+        i += bounded[0].length;
+        if (source[i] === "?") {
+          out += "?";
+          i += 1;
+        }
+        atomStart = -1;
+        continue;
+      }
+      // A brace that is neither quantifier is a literal single-character atom.
+      out += char;
+      atomStart = i;
+      atomEnd = i + 1;
+      i += 1;
+      continue;
+    }
+    out += char;
+    if (
+      char === "*" ||
+      char === "+" ||
+      char === "?" ||
+      char === "(" ||
+      char === ")" ||
+      char === "|" ||
+      char === "^" ||
+      char === "$"
+    ) {
+      atomStart = -1;
+    } else {
+      atomStart = i;
+      atomEnd = i + 1;
+    }
+    i += 1;
+  }
+  return out;
+}
+
 export function readRedactMatch(args: unknown[]) {
   const hasNamedGroups =
     args.length > 0 && typeof args[args.length - 1] === "object" && args[args.length - 1] !== null;

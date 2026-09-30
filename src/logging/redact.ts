@@ -7,7 +7,6 @@ import {
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { compileConfigRegex } from "../security/config-regex.js";
 import { readLoggingConfig } from "./config.js";
-import { replacePatternBounded } from "./redact-bounded.js";
 import {
   applyRedactionEdits,
   composeRedactionEdits,
@@ -31,6 +30,7 @@ import {
   readRedactMatch,
   redactPemBlock,
   replaceRedactPattern,
+  rewriteOpenEndedRepeats,
   type RedactMatch,
   type RedactPattern,
   type ResolvedRedactPattern,
@@ -39,14 +39,12 @@ import {
   AWS_SECRET_ACCESS_KEY_FIELD_KEYS,
   AMBIGUOUS_ASSIGNMENT_MATCHERS,
   AWS_SECRET_ACCESS_KEY_MATCHER,
-  BASE64_SAFE_TOKEN_BOUNDARY,
   BODY_SECRET_KEYS,
-  CHUNK_UNSAFE_PATTERN_SOURCES,
   CREDENTIAL_HEADER_FIELD_RE,
   DEFAULT_REDACT_PATTERNS,
   FORM_AWARE_EQUALS_ASSIGNMENT_PATTERN_SOURCES,
   FORM_BODY_KEY_INVISIBLE_CHARS,
-  IDENTIFIER_SAFE_TOKEN_BOUNDARY,
+  LINEAR_MATCHER_SOURCES,
   PAYMENT_CREDENTIAL_ENV_KEYS,
   PAYMENT_CREDENTIAL_JSON_KEYS,
   PAYMENT_CREDENTIAL_QUERY_KEYS,
@@ -71,9 +69,6 @@ const DEFAULT_REDACT_MIN_LENGTH = 18;
 const DEFAULT_REDACT_KEEP_START = 6;
 const DEFAULT_REDACT_KEEP_END = 4;
 const shellReferencePreservingPatterns = new WeakSet<ResolvedRedactPattern>();
-// Patterns whose left-context assertions or complete token can cross a chunk boundary must run
-// against the full string; chunking can invent a `^` boundary or split the secret itself.
-const chunkUnsafePatterns = new WeakSet<ResolvedRedactPattern>();
 const formAwareEqualsAssignmentPatterns = new WeakSet<ResolvedRedactPattern>();
 const sourceAssignmentPatterns = new WeakSet<ResolvedRedactPattern>();
 let defaultResolvedPatterns: ResolvedRedactPattern[] | undefined;
@@ -145,8 +140,10 @@ const DEFAULT_REDACT_PREFILTER_SOURCES: string[] = [
   String.raw`KEY|TOKEN|SECRET|PASSWORD|PASSWD|AUTH|COOKIE|SIGNATURE|CREDENTIAL|CARD|CVC|CVV|PAYMENT|PRIVATE KEY`,
   String.raw`security[-_]?code|\bpass\s*[=:]|\bpassphrase\s*[=:]|_(?:password|pass|passphrase|passwd)\s*[=:]|jwt\s*[=:]|session=|code=|\bsig\s*=`,
   String.raw`\bBearer\s+`,
-  // URL userinfo and connection-string password slots (`scheme://user:pass@host`).
-  String.raw`:\/\/[^\/\s:@]*:[^\s@]+@`,
+  // URL userinfo and connection-string password slots (`scheme://user:pass@host`). Anchored at
+  // the `@` so texts without one (e.g. repeated `postgres://u:` runs) scan linearly instead of
+  // rescanning a whole run from every `://`; the lookbehind only engages at `@` positions.
+  String.raw`(?<=:\/\/[^\/\s:@]*:[^\s@]+)@`,
   // Vendor token prefixes and webhook hosts, ordered like DEFAULT_REDACT_PATTERNS.
   String.raw`sk-|gh[opsur]_|github_pat_|glpat-|gloas-|gldt-|glcbt-|glptt-|glft-|glimt-|glagent-|glwt-|glsoat-|glffct-|glrt-|glrtr-|GR1348941|_gitlab_session=|xox[baprs]-|xapp-|hooks\.slack\.com|discord|gsk_|AIza|ya29\.|1\/\/0|eyJ|pplx-|fal_|fc-|bb_live_|gAAAA|[sr]k_(?:live|test)_|SG\.|npm_|pypi-|do[opr]_v1_|dp\.(?:ct|pt|sa|st|scim|audit)\.|dckr_|bkua_|CCIPAT_|sbp_|dapi[0-9a-f]|dd[pw]_|glsa_|nfp_|CFPAT-|ATCTT3|ATATT|ATBB|BBDC-|HRKU-|pat-(?:eu|na)1-|apify_api_|FlyV1|fio-u-|tvly-|exa_|syt_|retaindb_|mem0_|brv_|xai-|fw-|fw_|fpk_`,
   String.raw`(?:^|[^A-Za-z0-9_])(?:am_|sk_)`,
@@ -157,21 +154,25 @@ const DEFAULT_REDACT_PREFILTER_SOURCES: string[] = [
   // tail may mix further splices with key characters (e.g. an interior plus a trailing
   // filler). Require a key character before or after a splice so bare `+=` or line-leading
   // `===` separators do not trip the fast path.
-  String.raw`%[0-9A-Fa-f]{2}[${FORM_BODY_KEY_INVISIBLE_CHARS}+A-Za-z0-9_%.-]*=`,
   // Search at the required assignment separator, not at every invisible character: the key run
   // right before `=` must hold a splice and a key character. Two flat lookbehinds keep that to
   // plain character-class scans. A repeated group inside the lookbehind made JSC abandon the whole
   // match (no error, no match) once the run before `=` passed roughly 70k characters, which
   // silently skipped default redaction for long texts on Bun.
   String.raw`=(?<=[${FORM_BODY_KEY_INVISIBLE_CHARS}+][${FORM_BODY_KEY_INVISIBLE_CHARS}+A-Za-z0-9_%.-]*=)(?<=[A-Za-z0-9_%.-][${FORM_BODY_KEY_INVISIBLE_CHARS}+A-Za-z0-9_%.-]*=)`,
+  // Obfuscated form/URL keys: percent escapes can rewrite any key letter. Anchored at the `=`
+  // so texts without one (e.g. repeated `%41` runs) scan linearly; the lookbehind only engages
+  // at `=` positions, and like the forward form it fires when any percent escape precedes the
+  // key characters that run up to that `=`.
+  String.raw`(?<=%[0-9A-Fa-f]{2}[${FORM_BODY_KEY_INVISIBLE_CHARS}+A-Za-z0-9_%.-]*)=`,
 ];
 const DEFAULT_REDACT_PREFILTER_RE = new RegExp(
-  `(?:${DEFAULT_REDACT_PREFILTER_SOURCES.join("|")})`,
+  `(?:${DEFAULT_REDACT_PREFILTER_SOURCES.map(rewriteOpenEndedRepeats).join("|")})`,
   "iu",
 );
 
 // Whole-context rules admit prefixes whose boundaries differ under Unicode case folding.
-// Keep the shared text probe unchanged: its chunked matching has separate boundary semantics.
+// Keep the shared text probe unchanged; whole-text matching has its own boundary semantics.
 const FULL_CONTEXT_REDACT_EXTRA_TRIGGERS_RE =
   /JWT|Bearer\s+|am_|sk_|(?<!\d)\d{6,}:[A-Za-z0-9_-]{20,}/i;
 
@@ -194,6 +195,14 @@ function parsePattern(raw: RedactPattern): ResolvedRedactPattern | null {
   if (raw === PEM_REDACT_PATTERN_SOURCE) {
     return PEM_REDACT_MATCHER;
   }
+  if (typeof raw === "string") {
+    // Default sources with quadratic regex cost compile to linear matchers with identical
+    // match semantics; the source string stays the rule's identity for config and exports.
+    const linear = LINEAR_MATCHER_SOURCES.get(raw);
+    if (linear) {
+      return linear;
+    }
+  }
   if (typeof raw !== "string" && !(raw instanceof RegExp)) {
     if (AMBIGUOUS_ASSIGNMENT_MATCHERS.has(raw)) {
       sourceAssignmentPatterns.add(raw);
@@ -208,7 +217,10 @@ function parsePattern(raw: RedactPattern): ResolvedRedactPattern | null {
       pattern = new RegExp(raw.source, `${raw.flags}g`);
     }
   } else if (raw.trim()) {
-    pattern = compileConfigRegex(...parseRedactPatternSource(raw))?.regex ?? null;
+    const [source, flags] = parseRedactPatternSource(raw);
+    // Open-ended repeats on flat single-character atoms compile without one backtrack stack
+    // entry per repetition, so multi-megabyte values no longer overflow the regex stack.
+    pattern = compileConfigRegex(rewriteOpenEndedRepeats(source), flags)?.regex ?? null;
   }
   if (pattern && typeof raw === "string" && SHELL_REFERENCE_PRESERVING_PATTERN_SOURCES.has(raw)) {
     shellReferencePreservingPatterns.add(pattern);
@@ -218,15 +230,6 @@ function parsePattern(raw: RedactPattern): ResolvedRedactPattern | null {
   }
   if (pattern && typeof raw === "string" && FORM_AWARE_EQUALS_ASSIGNMENT_PATTERN_SOURCES.has(raw)) {
     formAwareEqualsAssignmentPatterns.add(pattern);
-  }
-  if (
-    pattern &&
-    typeof raw === "string" &&
-    (raw.startsWith(BASE64_SAFE_TOKEN_BOUNDARY) ||
-      raw.startsWith(IDENTIFIER_SAFE_TOKEN_BOUNDARY) ||
-      CHUNK_UNSAFE_PATTERN_SOURCES.has(raw))
-  ) {
-    chunkUnsafePatterns.add(pattern);
   }
   return pattern;
 }
@@ -715,12 +718,10 @@ export function redactText(
     const replace = (match: RedactMatch) =>
       redactMatch(match, pattern, options?.preserveSourceAssignment);
     const replaceRegex = (...args: unknown[]) => replace(readRedactMatch(args));
+    // Every rule scans the whole text: chunking missed credentials that straddled a boundary.
     // Each replacement finishes synchronously before this invocation advances its pattern.
     for (pattern of patterns) {
-      next =
-        pattern instanceof RegExp && !options?.fullContext && !chunkUnsafePatterns.has(pattern)
-          ? replacePatternBounded(next, pattern, replaceRegex)
-          : replaceRedactPattern(next, pattern, replace, replaceRegex);
+      next = replaceRedactPattern(next, pattern, replace, replaceRegex);
     }
     outcome = "ok";
     return next;
@@ -794,7 +795,7 @@ function looksLikeAppSpecificPassword(candidate: string): boolean {
 }
 
 function redactAppSpecificPasswords(text: string): string {
-  return replacePatternBounded(text, APP_SPECIFIC_PASSWORD_RE, (match: string, token: string) =>
+  return text.replace(APP_SPECIFIC_PASSWORD_RE, (match: string, token: string) =>
     looksLikeAppSpecificPassword(token) ? maskToken(token) : match,
   );
 }
