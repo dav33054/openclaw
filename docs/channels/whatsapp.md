@@ -132,6 +132,7 @@ A separate WhatsApp number is recommended (setup and metadata are optimized for 
 ## Runtime model
 
 - The gateway owns the WhatsApp socket and reconnect loop.
+- Temporary connection failures use bounded reconnect cycles. If a cycle exhausts its retries, the account remains eligible for the Gateway supervisor and health monitor to restart it after backoff. Logged-out or conflicting sessions still require operator action; manually stopped and disabled accounts stay stopped.
 - A watchdog tracks two signals independently: raw WhatsApp Web transport activity and application-message activity. A quiet-but-connected session is not restarted just because no message arrived recently; it forces reconnect only when transport frames stop arriving for a fixed internal window (not user-configurable) or application messages stay silent past 4x the normal message timeout. Right after a reconnect for a recently active session, that first window uses the shorter normal message timeout instead of the 4x window. OpenClaw can auto-reply to offline messages that Baileys delivers early in that reconnect, bounded by the inbound message-ID dedupe lifetime; initial startup keeps the short stale-history guard.
 - Outbound sends require an active WhatsApp listener for the target account; sends fail fast otherwise.
 - Group sends attach native mention metadata for `@+<digits>` and `@<digits>` tokens (in text and media captions) when the token matches current participant metadata, including LID-backed groups.
@@ -141,6 +142,38 @@ A separate WhatsApp number is recommended (setup and metadata are optimized for 
 - WhatsApp Web transport honors standard proxy environment variables on the gateway host (`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, lowercase variants). Prefer host-level proxy config over per-channel settings.
 - Media uploads use the same proxy environment, with `NO_PROXY` evaluated for each actual upload host independently of the WebSocket destination.
 - Media proxy URLs must use HTTP or HTTPS. Invalid media proxy settings fail uploads without blocking login or text messaging.
+
+### Reconnect settings
+
+The reconnect loop uses exponential backoff: it starts at 2 seconds, multiplies
+delays by 1.8 with jitter, and caps them at `reconnect.maxMs` (default: 30000,
+or 30 seconds). `reconnect.maxAttempts` limits failed attempts per cycle
+(default: 12). To keep a longer outage within one slower recovery cycle:
+
+```json
+{
+  "channels": {
+    "whatsapp": {
+      "reconnect": {
+        "maxAttempts": 60,
+        "maxMs": 120000
+      }
+    }
+  }
+}
+```
+
+Both settings must be integers. `maxAttempts` must be positive; `maxMs` must be
+between 2000 and 2147000000 milliseconds. Zero does not enable unlimited retries.
+Overrides under `channels.whatsapp.accounts.<id>.reconnect` inherit omitted values
+from the channel and shared default-account settings. Changes take effect when
+the account monitor restarts.
+
+The health monitor respects a scheduled reconnect delay and allows connection
+setup after it expires. If the attempt stalls beyond that grace, health recovery
+can intervene. Exhausting the configured cycle still hands recovery to the
+Gateway supervisor; increasing the limit does not turn logout or session
+conflict into retryable errors.
 
 ## Call the current requester with MeowCaller (experimental)
 

@@ -1,6 +1,9 @@
 // Gateway channel health policy.
 // Evaluates channel lifecycle snapshots for restart/readiness decisions.
-import { isFutureDateTimestampMs } from "@openclaw/normalization-core/number-coercion";
+import {
+  isFutureDateTimestampMs,
+  MAX_TIMER_TIMEOUT_MS,
+} from "@openclaw/normalization-core/number-coercion";
 import type { ChannelAccountSnapshot, ChannelId } from "../channels/plugins/types.public.js";
 
 type ChannelHealthSnapshot = Omit<ChannelAccountSnapshot, "accountId">;
@@ -159,6 +162,21 @@ export function evaluateChannelHealth(
     // account lifecycle; patch-merged timestamps from prior runs grant no grace.
     const disconnectBelongsToLifecycle =
       lastDisconnectAt != null && (lastStartAt == null || lastDisconnectAt >= lastStartAt);
+    const nextReconnectAt = snapshot.nextReconnectAt;
+    // A provider-owned backoff is recovery progress, not transport activity. Respect its
+    // bounded deadline and setup grace only when the disconnect belongs to this lifecycle.
+    if (
+      snapshot.lifecycle === "recovering" &&
+      currentLifecycleStarted &&
+      disconnectBelongsToLifecycle &&
+      typeof nextReconnectAt === "number" &&
+      Number.isSafeInteger(nextReconnectAt) &&
+      nextReconnectAt >= lastDisconnectAt &&
+      nextReconnectAt - lastDisconnectAt <= MAX_TIMER_TIMEOUT_MS &&
+      policy.now < nextReconnectAt + CHANNEL_RECONNECT_GRACE_MS
+    ) {
+      return { healthy: true, reason: "reconnect-grace" };
+    }
     if (
       disconnectBelongsToLifecycle &&
       Math.max(0, policy.now - lastDisconnectAt) < CHANNEL_RECONNECT_GRACE_MS
