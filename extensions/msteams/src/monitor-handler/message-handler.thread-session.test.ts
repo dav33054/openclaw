@@ -5,6 +5,17 @@ import { resolveMSTeamsRouteSessionKey } from "./thread-session.js";
 const channelConversationSessionKey = "agent:main:msteams:channel:19:channel@thread.tacv2";
 
 describe("msteams thread session isolation", () => {
+  it("returns the canonical channel key on opt-in even with compounded thread suffixes", () => {
+    expect(
+      resolveMSTeamsRouteSessionKey({
+        baseSessionKey: `${channelConversationSessionKey}:thread:old:thread:older`,
+        isChannel: true,
+        threadSessionPolicy: "channel",
+        conversationMessageId: "new-root",
+      }),
+    ).toBe(channelConversationSessionKey);
+  });
+
   it("produces different session keys for different threads in the same channel", () => {
     const sessionKeyA = resolveMSTeamsRouteSessionKey({
       baseSessionKey: channelConversationSessionKey,
