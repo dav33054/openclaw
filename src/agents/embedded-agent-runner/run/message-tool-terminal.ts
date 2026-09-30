@@ -98,7 +98,7 @@ function isCompletedMessageToolOnlySourceReply(params: {
   return (
     resolveMessageToolSourceReplyFinal(argsRecordForToolCall(params.context)) &&
     !isError &&
-    deliveryFact?.partialDelivery !== true
+    deliveryFact?.sourceReplyDelivered === true
   );
 }
 
