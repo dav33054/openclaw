@@ -41,10 +41,13 @@ export type ResolvedFailureAlert = CronFailureAlertRoute & {
   after: number;
   cooldownMs: number;
   includeSkipped: boolean;
+  /** The first chat alert of a failure streak becomes an owner-conversation repair request. */
+  repair: boolean;
 };
 
 export type CronNotificationIntent =
   | { kind: "auto-disabled"; job: CronNotificationJob; text: string }
+  | { kind: "failure-repair"; job: CronNotificationJob; text: string }
   | {
       kind: "failure-alert";
       job: CronNotificationJob;
